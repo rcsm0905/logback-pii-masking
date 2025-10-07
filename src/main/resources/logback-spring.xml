@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <!-- Console Appender with Layout-based PII Masking -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <layout class="com.example.logging.PiiMaskingLayout">
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{0}: %msg%n</pattern>
+            <maskKeys>${PII_MASK_KEYS:-NAME,ID_NUMBER,SSN,EMAIL,CREDIT_CARD_NUMBER,PHONE_NUMBER}</maskKeys>
+            <maskText>${PII_MASK_TEXT:-****}</maskText>
+        </layout>
+    </appender>
+
+    <!-- File Appender with Layout-based PII Masking -->
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>logs/application.log</file>
+        <layout class="com.example.logging.PiiMaskingLayout">
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{0}: %msg%n</pattern>
+            <maskKeys>${PII_MASK_KEYS:-NAME,ID_NUMBER,SSN,EMAIL,CREDIT_CARD_NUMBER,PHONE_NUMBER}</maskKeys>
+            <maskText>${PII_MASK_TEXT:-****}</maskText>
+        </layout>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>logs/application.%d{yyyy-MM-dd}.log</fileNamePattern>
+            <maxHistory>30</maxHistory>
+        </rollingPolicy>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="FILE"/>
+    </root>
+
+    <!-- Set specific log levels for our demo classes -->
+    <logger name="com.example" level="DEBUG"/>
+</configuration>

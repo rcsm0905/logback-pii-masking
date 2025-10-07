@@ -1,0 +1,36 @@
+# Spring Boot Application Configuration
+spring:
+  application:
+    name: logback-masking-demo
+  jackson:
+    serialization:
+      indent-output: true
+    default-property-inclusion: NON_NULL
+
+server:
+  port: 8080
+
+# Logging Configuration
+logging:
+  level:
+    com.example: DEBUG
+    org.springframework: INFO
+    root: INFO
+  file:
+    name: logs/application.log
+    max-size: 10MB
+    max-history: 30
+
+# PII Masking Configuration is now handled via environment variables:
+# PII_MASK_KEYS=NAME,ID_NUMBER,SSN,EMAIL,CREDIT_CARD_NUMBER,PHONE_NUMBER
+# PII_MASK_TEXT=****
+
+# Management endpoints for monitoring
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: when-authorized
