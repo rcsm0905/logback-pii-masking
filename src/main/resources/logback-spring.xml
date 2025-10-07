@@ -2,7 +2,7 @@
 <configuration>
     <!-- Console Appender with Layout-based PII Masking -->
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
-        <layout class="com.example.logging.PiiMaskingLayout">
+        <layout class="com.example.logging.SecurePiiMaskingLayout">
             <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{0}: %msg%n</pattern>
             <maskKeys>${PII_MASK_KEYS:-NAME,ID_NUMBER,SSN,EMAIL,CREDIT_CARD_NUMBER,PHONE_NUMBER}</maskKeys>
             <maskText>${PII_MASK_TEXT:-****}</maskText>
@@ -12,7 +12,7 @@
     <!-- File Appender with Layout-based PII Masking -->
     <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
         <file>logs/application.log</file>
-        <layout class="com.example.logging.PiiMaskingLayout">
+        <layout class="com.example.logging.SecurePiiMaskingLayout">
             <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{0}: %msg%n</pattern>
             <maskKeys>${PII_MASK_KEYS:-NAME,ID_NUMBER,SSN,EMAIL,CREDIT_CARD_NUMBER,PHONE_NUMBER}</maskKeys>
             <maskText>${PII_MASK_TEXT:-****}</maskText>
