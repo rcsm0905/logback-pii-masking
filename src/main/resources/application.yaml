@@ -1,5 +1,7 @@
 # Spring Boot Application Configuration
 spring:
+  profiles:
+    active: local
   application:
     name: logback-masking-demo
   jackson:
