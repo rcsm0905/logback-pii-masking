@@ -1,0 +1,101 @@
+
+
+
+<!DOCTYPE html>
+<html id="htmlId">
+<head>
+  <meta http-equiv="Content-Type" content="text/html;charset=UTF-8"> 
+  <title>Coverage Report > ZolozApiResult</title>
+  <style type="text/css">
+    @import "../../css/coverage.css";
+    @import "../../css/idea.min.css";
+  </style>
+  <script type="text/javascript" src="../../js/highlight.min.js"></script>
+  <script type="text/javascript" src="../../js/highlightjs-line-numbers.min.js"></script>
+</head>
+
+<body>
+<div class="content">
+<div class="breadCrumbs">
+Current scope:     <a href="../../index.html">all classes</a>
+    <span class="separator">|</span>
+    <a href="../index.html">com.example.dto</a>
+</div>
+
+<h1>Coverage Summary for Class: ZolozApiResult (com.example.dto)</h1>
+
+<table class="coverageStats">
+<tr>
+  <th class="name">Class</th>
+</tr>
+<tr>
+  <td class="name">ZolozApiResult</td>
+</tr>
+
+</table>
+
+<br/>
+<br/>
+
+
+<pre>
+<code class="sourceCode" id="sourceCode">&nbsp;package com.example.dto;
+&nbsp;
+&nbsp;import lombok.AccessLevel;
+&nbsp;import lombok.Data;
+&nbsp;import lombok.experimental.FieldDefaults;
+&nbsp;
+&nbsp;/**
+&nbsp; * Represents the result code and status of a Zoloz transaction.
+&nbsp; * &lt;p&gt;
+&nbsp; * Possible values and their meanings:
+&nbsp; * &lt;ul&gt;
+&nbsp; *   &lt;li&gt;{@code SUCCESS} (Status: S) - User finished the transaction.&lt;/li&gt;
+&nbsp; *   &lt;li&gt;{@code PROCESSING} (Status: S) - User hasn&#39;t finished the whole flow.&lt;/li&gt;
+&nbsp; *   &lt;li&gt;{@code INVALID_ARGUMENT} (Status: F) - Input parameters are invalid. For more information about which parameter is invalid, check the result message or the related log.&lt;/li&gt;
+&nbsp; *   &lt;li&gt;{@code SYSTEM_ERROR} (Status: F) - Other internal errors. For more information about the error details, check the result message or the related log.&lt;/li&gt;
+&nbsp; *   &lt;li&gt;{@code UNUSABLE} (Status: F) - User is blocked by the cooldown strategy.&lt;/li&gt;
+&nbsp; *   &lt;li&gt;{@code LIMIT_EXCEEDED} (Status: F) - User tried too many times within the same transaction.&lt;/li&gt;
+&nbsp; * &lt;/ul&gt;
+&nbsp; */
+&nbsp;@Data
+&nbsp;@FieldDefaults(level = AccessLevel.PRIVATE)
+&nbsp;public class ZolozApiResult {
+&nbsp;    private String resultCode;
+&nbsp;
+&nbsp;    /**
+&nbsp;     * &quot;S&quot;: successful
+&nbsp;     * &quot;F&quot;: failed
+&nbsp;     * &quot;U&quot;: unknown issue
+&nbsp;     */
+&nbsp;    private String resultStatus;
+&nbsp;
+&nbsp;    private String resultMessage;
+&nbsp;}
+</code>
+</pre>
+</div>
+
+<script type="text/javascript">
+(function() {
+    var msie = false, msie9 = false;
+    /*@cc_on
+      msie = true;
+      @if (@_jscript_version >= 9)
+        msie9 = true;
+      @end
+    @*/
+
+    if (!msie || msie && msie9) {
+      hljs.highlightAll()
+      hljs.initLineNumbersOnLoad();
+    }
+})();
+</script>
+
+<div class="footer">
+    
+    <div style="float:right;">generated on 2025-10-14 17:53</div>
+</div>
+</body>
+</html>

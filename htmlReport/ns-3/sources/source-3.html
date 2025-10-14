@@ -1,0 +1,270 @@
+
+
+
+<!DOCTYPE html>
+<html id="htmlId">
+<head>
+  <meta http-equiv="Content-Type" content="text/html;charset=UTF-8"> 
+  <title>Coverage Report > ZolozResponse</title>
+  <style type="text/css">
+    @import "../../css/coverage.css";
+    @import "../../css/idea.min.css";
+  </style>
+  <script type="text/javascript" src="../../js/highlight.min.js"></script>
+  <script type="text/javascript" src="../../js/highlightjs-line-numbers.min.js"></script>
+</head>
+
+<body>
+<div class="content">
+<div class="breadCrumbs">
+Current scope:     <a href="../../index.html">all classes</a>
+    <span class="separator">|</span>
+    <a href="../index.html">com.example.dto</a>
+</div>
+
+<h1>Coverage Summary for Class: ZolozResponse (com.example.dto)</h1>
+
+<table class="coverageStats">
+<tr>
+  <th class="name">Class</th>
+<th class="coverageStat 
+">
+  Class, %
+</th>
+<th class="coverageStat 
+">
+  Method, %
+</th>
+<th class="coverageStat 
+">
+  Line, %
+</th>
+</tr>
+<tr>
+  <td class="name">ZolozResponse</td>
+<td class="coverageStat">
+  <span class="percent">
+    0%
+  </span>
+  <span class="absValue">
+    (0/1)
+  </span>
+</td>
+<td class="coverageStat">
+  <span class="percent">
+    0%
+  </span>
+  <span class="absValue">
+    (0/28)
+  </span>
+</td>
+<td class="coverageStat">
+  <span class="percent">
+    0%
+  </span>
+  <span class="absValue">
+    (0/34)
+  </span>
+</td>
+</tr>
+
+</table>
+
+<br/>
+<br/>
+
+
+<pre>
+<code class="sourceCode" id="sourceCode">&nbsp;package com.example.dto;
+&nbsp;
+&nbsp;import com.fasterxml.jackson.annotation.JsonProperty;
+&nbsp;import java.util.List;
+&nbsp;
+&nbsp;/**
+&nbsp; * Sample DTO representing a Zoloz eKYC response with PII data
+&nbsp; */
+&nbsp;public class ZolozResponse {
+&nbsp;    
+&nbsp;    @JsonProperty(&quot;NAME&quot;)
+&nbsp;    private String name;
+&nbsp;    
+&nbsp;    @JsonProperty(&quot;NAME_CN&quot;)
+&nbsp;    private String nameCn;
+&nbsp;    
+&nbsp;    @JsonProperty(&quot;NAME_CN_RAW&quot;)
+&nbsp;    private String nameCnRaw;
+&nbsp;    
+&nbsp;    @JsonProperty(&quot;ID_NUMBER&quot;)
+&nbsp;    private String idNumber;
+&nbsp;    
+&nbsp;    @JsonProperty(&quot;DATE_OF_BIRTH&quot;)
+&nbsp;    private String dateOfBirth;
+&nbsp;    
+&nbsp;    @JsonProperty(&quot;STANDARDIZED_DATE_OF_BIRTH&quot;)
+&nbsp;    private String standardizedDateOfBirth;
+&nbsp;    
+&nbsp;    @JsonProperty(&quot;LATEST_ISSUE_DATE&quot;)
+&nbsp;    private String latestIssueDate;
+&nbsp;    
+&nbsp;    @JsonProperty(&quot;STANDARDIZED_LATEST_ISSUE_DATE&quot;)
+&nbsp;    private String standardizedLatestIssueDate;
+&nbsp;    
+&nbsp;    @JsonProperty(&quot;CHINESE_COMMERCIAL_CODE&quot;)
+&nbsp;    private String chineseCommercialCode;
+&nbsp;    
+&nbsp;    @JsonProperty(&quot;SYMBOLS&quot;)
+&nbsp;    private String symbols;
+&nbsp;    
+&nbsp;    @JsonProperty(&quot;ocrResultDetail&quot;)
+&nbsp;    private List&lt;OcrResultDetail&gt; ocrResultDetail;
+&nbsp;    
+&nbsp;    @JsonProperty(&quot;status&quot;)
+&nbsp;    private String status;
+&nbsp;    
+&nbsp;    @JsonProperty(&quot;message&quot;)
+&nbsp;    private String message;
+&nbsp;
+&nbsp;    // Constructors
+<b class="nc">&nbsp;    public ZolozResponse() {}</b>
+&nbsp;
+<b class="nc">&nbsp;    public ZolozResponse(String name, String nameCn, String idNumber, String dateOfBirth) {</b>
+<b class="nc">&nbsp;        this.name = name;</b>
+<b class="nc">&nbsp;        this.nameCn = nameCn;</b>
+<b class="nc">&nbsp;        this.idNumber = idNumber;</b>
+<b class="nc">&nbsp;        this.dateOfBirth = dateOfBirth;</b>
+<b class="nc">&nbsp;        this.status = &quot;SUCCESS&quot;;</b>
+<b class="nc">&nbsp;        this.message = &quot;Verification completed&quot;;</b>
+&nbsp;    }
+&nbsp;
+&nbsp;    // Getters and Setters
+&nbsp;    public String getName() {
+<b class="nc">&nbsp;        return name;</b>
+&nbsp;    }
+&nbsp;
+&nbsp;    public void setName(String name) {
+<b class="nc">&nbsp;        this.name = name;</b>
+&nbsp;    }
+&nbsp;
+&nbsp;    public String getNameCn() {
+<b class="nc">&nbsp;        return nameCn;</b>
+&nbsp;    }
+&nbsp;
+&nbsp;    public void setNameCn(String nameCn) {
+<b class="nc">&nbsp;        this.nameCn = nameCn;</b>
+&nbsp;    }
+&nbsp;
+&nbsp;    public String getNameCnRaw() {
+<b class="nc">&nbsp;        return nameCnRaw;</b>
+&nbsp;    }
+&nbsp;
+&nbsp;    public void setNameCnRaw(String nameCnRaw) {
+<b class="nc">&nbsp;        this.nameCnRaw = nameCnRaw;</b>
+&nbsp;    }
+&nbsp;
+&nbsp;    public String getIdNumber() {
+<b class="nc">&nbsp;        return idNumber;</b>
+&nbsp;    }
+&nbsp;
+&nbsp;    public void setIdNumber(String idNumber) {
+<b class="nc">&nbsp;        this.idNumber = idNumber;</b>
+&nbsp;    }
+&nbsp;
+&nbsp;    public String getDateOfBirth() {
+<b class="nc">&nbsp;        return dateOfBirth;</b>
+&nbsp;    }
+&nbsp;
+&nbsp;    public void setDateOfBirth(String dateOfBirth) {
+<b class="nc">&nbsp;        this.dateOfBirth = dateOfBirth;</b>
+&nbsp;    }
+&nbsp;
+&nbsp;    public String getStandardizedDateOfBirth() {
+<b class="nc">&nbsp;        return standardizedDateOfBirth;</b>
+&nbsp;    }
+&nbsp;
+&nbsp;    public void setStandardizedDateOfBirth(String standardizedDateOfBirth) {
+<b class="nc">&nbsp;        this.standardizedDateOfBirth = standardizedDateOfBirth;</b>
+&nbsp;    }
+&nbsp;
+&nbsp;    public String getLatestIssueDate() {
+<b class="nc">&nbsp;        return latestIssueDate;</b>
+&nbsp;    }
+&nbsp;
+&nbsp;    public void setLatestIssueDate(String latestIssueDate) {
+<b class="nc">&nbsp;        this.latestIssueDate = latestIssueDate;</b>
+&nbsp;    }
+&nbsp;
+&nbsp;    public String getStandardizedLatestIssueDate() {
+<b class="nc">&nbsp;        return standardizedLatestIssueDate;</b>
+&nbsp;    }
+&nbsp;
+&nbsp;    public void setStandardizedLatestIssueDate(String standardizedLatestIssueDate) {
+<b class="nc">&nbsp;        this.standardizedLatestIssueDate = standardizedLatestIssueDate;</b>
+&nbsp;    }
+&nbsp;
+&nbsp;    public String getChineseCommercialCode() {
+<b class="nc">&nbsp;        return chineseCommercialCode;</b>
+&nbsp;    }
+&nbsp;
+&nbsp;    public void setChineseCommercialCode(String chineseCommercialCode) {
+<b class="nc">&nbsp;        this.chineseCommercialCode = chineseCommercialCode;</b>
+&nbsp;    }
+&nbsp;
+&nbsp;    public String getSymbols() {
+<b class="nc">&nbsp;        return symbols;</b>
+&nbsp;    }
+&nbsp;
+&nbsp;    public void setSymbols(String symbols) {
+<b class="nc">&nbsp;        this.symbols = symbols;</b>
+&nbsp;    }
+&nbsp;
+&nbsp;    public List&lt;OcrResultDetail&gt; getOcrResultDetail() {
+<b class="nc">&nbsp;        return ocrResultDetail;</b>
+&nbsp;    }
+&nbsp;
+&nbsp;    public void setOcrResultDetail(List&lt;OcrResultDetail&gt; ocrResultDetail) {
+<b class="nc">&nbsp;        this.ocrResultDetail = ocrResultDetail;</b>
+&nbsp;    }
+&nbsp;
+&nbsp;    public String getStatus() {
+<b class="nc">&nbsp;        return status;</b>
+&nbsp;    }
+&nbsp;
+&nbsp;    public void setStatus(String status) {
+<b class="nc">&nbsp;        this.status = status;</b>
+&nbsp;    }
+&nbsp;
+&nbsp;    public String getMessage() {
+<b class="nc">&nbsp;        return message;</b>
+&nbsp;    }
+&nbsp;
+&nbsp;    public void setMessage(String message) {
+<b class="nc">&nbsp;        this.message = message;</b>
+&nbsp;    }
+&nbsp;}
+</code>
+</pre>
+</div>
+
+<script type="text/javascript">
+(function() {
+    var msie = false, msie9 = false;
+    /*@cc_on
+      msie = true;
+      @if (@_jscript_version >= 9)
+        msie9 = true;
+      @end
+    @*/
+
+    if (!msie || msie && msie9) {
+      hljs.highlightAll()
+      hljs.initLineNumbersOnLoad();
+    }
+})();
+</script>
+
+<div class="footer">
+    
+    <div style="float:right;">generated on 2025-10-14 17:53</div>
+</div>
+</body>
+</html>

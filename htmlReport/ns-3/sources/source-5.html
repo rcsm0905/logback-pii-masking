@@ -1,0 +1,118 @@
+
+
+
+<!DOCTYPE html>
+<html id="htmlId">
+<head>
+  <meta http-equiv="Content-Type" content="text/html;charset=UTF-8"> 
+  <title>Coverage Report > ZolozCheckResultResponse</title>
+  <style type="text/css">
+    @import "../../css/coverage.css";
+    @import "../../css/idea.min.css";
+  </style>
+  <script type="text/javascript" src="../../js/highlight.min.js"></script>
+  <script type="text/javascript" src="../../js/highlightjs-line-numbers.min.js"></script>
+</head>
+
+<body>
+<div class="content">
+<div class="breadCrumbs">
+Current scope:     <a href="../../index.html">all classes</a>
+    <span class="separator">|</span>
+    <a href="../index.html">com.example.dto</a>
+</div>
+
+<h1>Coverage Summary for Class: ZolozCheckResultResponse (com.example.dto)</h1>
+
+<table class="coverageStats">
+
+<tr>
+  <th class="name">Class</th>
+</tr>
+  <tr>
+    <td class="name">ZolozCheckResultResponse$ExtInfo</td>
+  </tr>
+  <tr>
+    <td class="name">ZolozCheckResultResponse$ExtInfo$OcrResultDetailItem</td>
+  </tr>
+<tr>
+  <td class="name"><strong>Total</strong></td>
+</tr>
+</table>
+
+<br/>
+<br/>
+
+
+<pre>
+<code class="sourceCode" id="sourceCode">&nbsp;package com.example.dto;
+&nbsp;
+&nbsp;import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+&nbsp;import java.util.List;
+&nbsp;import java.util.Map;
+&nbsp;import lombok.AccessLevel;
+&nbsp;import lombok.Data;
+&nbsp;import lombok.experimental.FieldDefaults;
+&nbsp;
+&nbsp;@Data
+&nbsp;@FieldDefaults(level = AccessLevel.PRIVATE)
+&nbsp;@JsonIgnoreProperties(ignoreUnknown = true)
+&nbsp;public class ZolozCheckResultResponse {
+&nbsp;    ZolozApiResult result;
+&nbsp;    ExtInfo extInfo;
+&nbsp;
+&nbsp;    @Data
+&nbsp;    @FieldDefaults(level = AccessLevel.PRIVATE)
+&nbsp;    @JsonIgnoreProperties(ignoreUnknown = true)
+&nbsp;    public static class ExtInfo {
+&nbsp;        String recognitionResult;
+&nbsp;        String certType;
+&nbsp;        String docCategory;
+&nbsp;        Integer docEdition;
+&nbsp;        List&lt;String&gt; imageContent;
+&nbsp;        Map&lt;String, String&gt; extraImages;
+&nbsp;        Map&lt;String, String&gt; ocrResult;
+&nbsp;        Map&lt;String, String&gt; ocrResultFormat;
+&nbsp;        Map&lt;String, OcrResultDetailItem&gt; ocrResultDetail;
+&nbsp;        String countryCode;
+&nbsp;        Map&lt;String, String&gt; spoofResult;
+&nbsp;        String recognitionErrorCode;
+&nbsp;        String recognitionErrorDescription;
+&nbsp;
+&nbsp;        @Data
+&nbsp;        @FieldDefaults(level = AccessLevel.PRIVATE)
+&nbsp;        @JsonIgnoreProperties(ignoreUnknown = true)
+&nbsp;        public static class OcrResultDetailItem {
+&nbsp;            String name;
+&nbsp;            String source;
+&nbsp;            String value;
+&nbsp;        }
+&nbsp;    }
+&nbsp;}
+</code>
+</pre>
+</div>
+
+<script type="text/javascript">
+(function() {
+    var msie = false, msie9 = false;
+    /*@cc_on
+      msie = true;
+      @if (@_jscript_version >= 9)
+        msie9 = true;
+      @end
+    @*/
+
+    if (!msie || msie && msie9) {
+      hljs.highlightAll()
+      hljs.initLineNumbersOnLoad();
+    }
+})();
+</script>
+
+<div class="footer">
+    
+    <div style="float:right;">generated on 2025-10-14 17:53</div>
+</div>
+</body>
+</html>

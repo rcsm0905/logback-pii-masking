@@ -1,182 +1,98 @@
 package com.example.logging;
 
-import ch.qos.logback.core.Context;
-import ch.qos.logback.core.spi.ContextAwareBase;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.Mockito.*;
 
-/**
- * Unit tests for PiiDataMasker
- * Tests PII masking at various nesting depths and error scenarios
- */
 class PiiDataMaskerTest {
 
+	private static final ObjectMapper MAPPER = new ObjectMapper();
 	private PiiDataMasker masker;
 
 	@BeforeEach
 	void setUp() {
 		masker = new PiiDataMasker();
-		masker.setMaskedFields("NAME,ID_NUMBER,CHINESE_COMMERCIAL_CODE,SSN,EMAIL");
-		masker.setMaskToken("[REDACTED]");
-		masker.setOcrFields("ocrResultDetail");
-		masker.setOcrMaskToken("[REDACTED]");
-		masker.setMaxMessageSize(1000000);
-		
-		// Set up Logback context for status messages (prevents warnings)
-		Context mockContext = mock(Context.class);
-		masker.setContext(mockContext);
-		
+		masker.setMaskedFields("ssn, card , password");     // note extra spaces
+		masker.setMaskToken("[X]");
 		masker.start();
 	}
 
+	@AfterEach
+	void tearDown() {
+		masker.stop();
+	}
+
+	/* ────────────────── simple masking ────────────────── */
+
 	@Test
-	void testBasicPiiMasking() {
-		String input = "{\"NAME\":\"John Doe\",\"ID_NUMBER\":\"123-45-6789\"}";
-		String result = masker.maskSensitiveDataOptimized(input);
-		
-		assertFalse(result.contains("John Doe"), "PII 'John Doe' should be masked");
-		assertFalse(result.contains("123-45-6789"), "PII '123-45-6789' should be masked");
-		assertTrue(result.contains("[REDACTED]"), "Should contain [REDACTED]");
-		assertTrue(result.contains("\"NAME\""), "Field name should be preserved");
+	void should_mask_configured_primitive_field() {
+		ObjectNode root = MAPPER.createObjectNode();
+		root.put("name", "Alice");
+		root.put("ssn", "123-45-6789");
+
+		masker.maskJsonTree(root);
+
+		assertThat(root.get("name").asText()).isEqualTo("Alice");
+		assertThat(root.get("ssn").asText()).isEqualTo("[X]");
 	}
 
 	@Test
-	void testDeepNesting() {
-		String input = "{\"level1\":{\"level2\":{\"level3\":{\"level4\":{\"level5\":{\"NAME\":\"Deep Secret\"}}}}}}";
-		String result = masker.maskSensitiveDataOptimized(input);
-		
-		assertFalse(result.contains("Deep Secret"), "Deep nested PII should be masked");
-		assertTrue(result.contains("[REDACTED]"), "Should contain [REDACTED]");
+	void should_mask_arrays_and_objects() {
+		ObjectNode root = MAPPER.createObjectNode();
+
+		// array
+		ArrayNode arr = root.putArray("card");
+		arr.add("4111").add("4222");
+
+		// object
+		ObjectNode innerObj = root.putObject("password");
+		innerObj.put("plain", "p@ssw0rd");
+
+		masker.maskJsonTree(root);
+
+		root.get("card").forEach(n -> assertThat(n.asText()).isEqualTo("[X]"));
+		root.get("password").fields().forEachRemaining(e ->
+				assertThat(e.getValue().asText()).isEqualTo("[X]"));
+	}
+
+	/* ────────────────── nested JSON in string ────────────────── */
+
+	@Test
+	void should_mask_values_inside_string_embedded_json() throws Exception {
+		ObjectNode root = MAPPER.createObjectNode();
+		root.put("payload",
+				"{\"user\":\"Bob\",\"ssn\":\"999-88-7777\",\"nested\":{\"card\":\"4111\"}}");
+
+		masker.maskJsonTree(root);
+
+		// parse back the inner JSON to verify masking occurred
+		String payload = root.get("payload").asText();
+		JsonNode inner  = MAPPER.readTree(payload);
+		assertThat(inner.get("ssn").asText()).isEqualTo("[X]");
+		assertThat(inner.get("nested").get("card").asText()).isEqualTo("[X]");
+	}
+
+	/* ────────────────── defensive branches ────────────────── */
+
+	@Test
+	void null_root_is_noop() {
+		Assertions.assertDoesNotThrow(() -> masker.maskJsonTree(null));
 	}
 
 	@Test
-	void testOcrFieldMasking() {
-		String input = "{\"ocrResultDetail\":{\"MRZ_NAME\":{\"value\":\"Secret Data\"}}}";
-		String result = masker.maskSensitiveDataOptimized(input);
-		
-		assertFalse(result.contains("Secret Data"), "OCR detail should be masked");
-		assertTrue(result.contains("{[REDACTED]}"), "Should mask entire OCR object");
-	}
-
-	@Test
-	void testImageContentFieldMasking() {
-		String input = "{\"imageContent\":[\"/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAoHBxISEhUSEhIVFRUVFRUVFRUVFRUVFRUVFxUZGBYVFhUaHysjGh0oHRUWJTUlKC0vMjIyGSI4PTcwPCsxMi8BCgsLDw4PHRERHS8dHSUvLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vL//AABEIAoAC0AMBIgACEQEDEQH\"]}";
-		String result = masker.maskSensitiveDataOptimized(input);
-		
-		// Since imageContent is not in our masked fields list, it should not be masked
-		// This test verifies field-based masking behavior
-		assertTrue(result.contains("/9j/4AAQSkZJRg"), "imageContent should not be masked when not in maskedFields");
-		assertFalse(result.contains("[REDACTED]"), "Should not contain [REDACTED] for non-masked field");
-	}
-
-	@Test
-	void testMessageTooLarge() {
-		String hugeMessage = "{\"data\":\"" + "x".repeat(2_000_000) + "\"}";
-		String result = masker.maskSensitiveDataOptimized(hugeMessage);
-		
-		assertTrue(result.startsWith("[LOG TOO LARGE - REDACTED FOR SAFETY"), 
-			"Oversized messages should be redacted");
-		assertFalse(result.contains("xxxxxx"), "Original data should not be in result");
-	}
-
-	@Test
-	void testInvalidJson() {
-		String invalidJson = "{invalid json}";
-		String result = masker.maskSensitiveDataOptimized(invalidJson);
-		
-		assertTrue(result.contains("[MASKING ERROR - LOG REDACTED FOR SAFETY]"), 
-			"Invalid JSON should return error message");
-		assertFalse(result.contains("{invalid json}"), "Original invalid JSON should not be returned");
-	}
-
-	@Test
-	void testNullAndEmptyMessages() {
-		assertNull(masker.maskSensitiveDataOptimized(null), "Null should return null");
-		assertEquals("", masker.maskSensitiveDataOptimized(""), "Empty should return empty");
-	}
-
-	@Test
-	void testNestedJsonString() {
-		String input = "{\"message\":\"Response: {\\\"NAME\\\":\\\"John Doe\\\"}\"}";
-		String result = masker.maskSensitiveDataOptimized(input);
-		
-		assertFalse(result.contains("John Doe"), "PII in nested JSON string should be masked");
-		assertTrue(result.contains("[REDACTED]"), "Should contain [REDACTED]");
-	}
-
-	@Test
-	void testMultipleFields() {
-		String input = "{\"NAME\":\"John\",\"age\":30,\"ID_NUMBER\":\"123\",\"SSN\":\"456\"}";
-		String result = masker.maskSensitiveDataOptimized(input);
-		
-		assertFalse(result.contains("John"), "NAME should be masked");
-		assertFalse(result.contains("\"123\""), "ID_NUMBER should be masked");
-		assertFalse(result.contains("\"456\""), "SSN should be masked");
-		assertTrue(result.contains("\"age\":30"), "Non-PII field should not be masked");
-	}
-
-	@Test
-	void testArraysWithPII() {
-		String input = "{\"users\":[{\"NAME\":\"Alice\"},{\"NAME\":\"Bob\"}]}";
-		String result = masker.maskSensitiveDataOptimized(input);
-		
-		assertFalse(result.contains("Alice"), "PII in array should be masked");
-		assertFalse(result.contains("Bob"), "PII in array should be masked");
-	}
-
-	@Test
-	void testFieldNamePreservation() {
-		String input = "{\"NAME\":\"Secret\",\"ID_NUMBER\":\"123\"}";
-		String result = masker.maskSensitiveDataOptimized(input);
-		
-		assertTrue(result.contains("\"NAME\""), "Field name NAME should be preserved");
-		assertTrue(result.contains("\"ID_NUMBER\""), "Field name ID_NUMBER should be preserved");
-		assertFalse(result.contains("Secret"), "Value should be masked");
-		assertFalse(result.contains("\"123\""), "Value should be masked");
-	}
-	
-	@Test
-	void testRecursionDepthLimit() {
-		// Create deeply nested JSON string structure to test recursion limit
-		StringBuilder nestedJson = new StringBuilder("{\"message\":\"");
-		for (int i = 0; i < 15; i++) {
-			nestedJson.append("{\\\"level").append(i).append("\\\":\\\"");
-		}
-		nestedJson.append("data");
-		for (int i = 0; i < 15; i++) {
-			nestedJson.append("\\\"}");
-		}
-		nestedJson.append("\"}");
-		
-		String result = masker.maskSensitiveDataOptimized(nestedJson.toString());
-		
-		// Should handle gracefully without StackOverflow
-		assertNotNull(result, "Should not throw StackOverflowError");
-		assertFalse(result.contains("StackOverflow"), "Should not contain StackOverflow error");
-	}
-	
-	@Test
-	void testInitializationValidation() {
-		PiiDataMasker invalidMasker = new PiiDataMasker();
-		// Don't configure any masking
-		invalidMasker.setMaskedFields("");
-		invalidMasker.setOcrFields("");
-		invalidMasker.setMaxMessageSize(1000000);
-		
-		assertThrows(IllegalStateException.class, () -> invalidMasker.start(),
-			"Should throw exception if no masking configured");
-	}
-	
-	@Test
-	void testMaxMessageSizeValidation() {
-		PiiDataMasker invalidMasker = new PiiDataMasker();
-		invalidMasker.setMaskedFields("NAME");
-		invalidMasker.setMaxMessageSize(0); // Invalid!
-		
-		assertThrows(IllegalStateException.class, () -> invalidMasker.start(),
-			"Should throw exception if maxMessageSize <= 0");
+	void start_without_required_properties_fails() {
+		PiiDataMasker m = new PiiDataMasker();
+		m.setMaskToken("[X]");
+		// maskedFields missing
+		assertThatThrownBy(m::start)
+				.isInstanceOf(IllegalStateException.class);
 	}
 }
-

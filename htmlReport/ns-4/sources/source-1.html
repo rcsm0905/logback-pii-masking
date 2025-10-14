@@ -1,0 +1,328 @@
+
+
+
+<!DOCTYPE html>
+<html id="htmlId">
+<head>
+  <meta http-equiv="Content-Type" content="text/html;charset=UTF-8"> 
+  <title>Coverage Report > JsonStructuredLayout</title>
+  <style type="text/css">
+    @import "../../css/coverage.css";
+    @import "../../css/idea.min.css";
+  </style>
+  <script type="text/javascript" src="../../js/highlight.min.js"></script>
+  <script type="text/javascript" src="../../js/highlightjs-line-numbers.min.js"></script>
+</head>
+
+<body>
+<div class="content">
+<div class="breadCrumbs">
+Current scope:     <a href="../../index.html">all classes</a>
+    <span class="separator">|</span>
+    <a href="../index.html">com.example.logging</a>
+</div>
+
+<h1>Coverage Summary for Class: JsonStructuredLayout (com.example.logging)</h1>
+
+<table class="coverageStats">
+<tr>
+  <th class="name">Class</th>
+<th class="coverageStat 
+">
+  Class, %
+</th>
+<th class="coverageStat 
+">
+  Method, %
+</th>
+<th class="coverageStat 
+">
+  Branch, %
+</th>
+<th class="coverageStat 
+">
+  Line, %
+</th>
+</tr>
+<tr>
+  <td class="name">JsonStructuredLayout</td>
+<td class="coverageStat">
+  <span class="percent">
+    100%
+  </span>
+  <span class="absValue">
+    (1/1)
+  </span>
+</td>
+<td class="coverageStat">
+  <span class="percent">
+    88.9%
+  </span>
+  <span class="absValue">
+    (8/9)
+  </span>
+</td>
+<td class="coverageStat">
+  <span class="percent">
+    37.5%
+  </span>
+  <span class="absValue">
+    (12/32)
+  </span>
+</td>
+<td class="coverageStat">
+  <span class="percent">
+    78.3%
+  </span>
+  <span class="absValue">
+    (47/60)
+  </span>
+</td>
+</tr>
+
+</table>
+
+<br/>
+<br/>
+
+
+<pre>
+<code class="sourceCode" id="sourceCode">&nbsp;package com.example.logging;
+&nbsp;
+&nbsp;import ch.qos.logback.classic.spi.ILoggingEvent;
+&nbsp;import ch.qos.logback.core.LayoutBase;
+&nbsp;import com.fasterxml.jackson.databind.ObjectMapper;
+&nbsp;import com.fasterxml.jackson.databind.SerializationFeature;
+&nbsp;import com.fasterxml.jackson.databind.node.ObjectNode;
+&nbsp;import com.fasterxml.jackson.databind.node.TextNode;
+&nbsp;import java.time.Instant;
+&nbsp;import java.time.ZoneId;
+&nbsp;import java.time.format.DateTimeFormatter;
+&nbsp;import java.util.Map;
+&nbsp;import lombok.Setter;
+&nbsp;
+&nbsp;/**
+&nbsp; * • Builds one {@code ObjectNode} per log event, adds timestamp/level/logger/
+&nbsp; *   MDC/message/exception.
+&nbsp; * • Calls {@link PiiDataMasker#maskJsonTree} to redact PII in-place.
+&nbsp; * • Serializes once (pretty in “local” profile, compact otherwise) and returns
+&nbsp; *   the line to Logback.
+&nbsp; * &lt;p&gt;
+&nbsp; * Why a custom layout?
+&nbsp; * - No extra dependency; direct call to the tree-walker masker.
+&nbsp; * - One Jackson pass  (ObjectNode → mask → write) instead of
+&nbsp; *   Map → string → parse → mask → string.
+&nbsp; * &lt;p&gt;
+&nbsp; * Extra safety helpers
+&nbsp; * --------------------
+&nbsp; * • {@code formatMessage}  – detects complex arguments, replaces their
+&nbsp; *   {@code toString()} with compact JSON so nested fields can still be masked.
+&nbsp; *   Cost is paid only when such an argument exists.
+&nbsp; * • {@code isComplexObject} – cheap guard to skip primitives/Strings/enums.
+&nbsp; * &lt;p&gt;
+&nbsp; * Current masking limitation
+&nbsp; * --------------------------
+&nbsp; * The masker operates on valid JSON.  If a user logs a complex object without
+&nbsp; * the helper (e.g. via plain {@code toString()}) its internal fields are *not*
+&nbsp; * parsed and therefore cannot be masked.
+&nbsp; * &lt;p&gt;
+&nbsp; * Config knobs (see logback-spring.xml)
+&nbsp; * -------------------------------------
+&nbsp; * • {@code &lt;prettyPrint&gt;}      – pretty vs. compact output.
+&nbsp; * • {@code &lt;maskedFields&gt;} etc – passed to the nested {@code PiiDataMasker}.
+&nbsp; * &lt;p&gt;
+&nbsp; * Thread-safety
+&nbsp; * -------------
+&nbsp; * Static mappers and formatter are immutable; the layout holds no mutable
+&nbsp; * state between calls.
+&nbsp; */
+&nbsp;@Setter
+<b class="fc">&nbsp;public class JsonStructuredLayout extends LayoutBase&lt;ILoggingEvent&gt; {</b>
+&nbsp;
+<b class="fc">&nbsp;	private static final DateTimeFormatter ISO_FORMATTER =</b>
+<b class="fc">&nbsp;			DateTimeFormatter.ofPattern(&quot;yyyy-MM-dd&#39;T&#39;HH:mm:ss.SSSXXX&quot;)</b>
+<b class="fc">&nbsp;					.withZone(ZoneId.systemDefault());</b>
+&nbsp;
+<b class="fc">&nbsp;	private static final ObjectMapper COMPACT_MAPPER = new ObjectMapper()</b>
+<b class="fc">&nbsp;			.configure(SerializationFeature.FAIL_ON_EMPTY_BEANS, false);</b>
+&nbsp;
+<b class="fc">&nbsp;	private static final ObjectMapper PRETTY_MAPPER = new ObjectMapper()</b>
+<b class="fc">&nbsp;			.configure(SerializationFeature.FAIL_ON_EMPTY_BEANS, false)</b>
+<b class="fc">&nbsp;			.configure(SerializationFeature.INDENT_OUTPUT, true);</b>
+&nbsp;
+&nbsp;	// Nested PII masking component
+&nbsp;	private PiiDataMasker maskingLayout;
+&nbsp;
+&nbsp;	/**
+&nbsp;	 * Pretty print for local dev (configurable via logback-spring.xml)
+&nbsp;	 * If true, use {@link #PRETTY_MAPPER}; otherwise use {@link #COMPACT_MAPPER}.
+&nbsp;	 * */
+&nbsp;	private boolean prettyPrint;
+&nbsp;
+&nbsp;	/**
+&nbsp;	 * Convert one {@link ILoggingEvent} to a JSON line.
+&nbsp;	 * &lt;p&gt;
+&nbsp;	 * 1. Build an {@code ObjectNode} containing the canonical fields we want
+&nbsp;	 *    (`timestamp`, `level`, `logger`, `message`, MDC, optional `exception`).
+&nbsp;	 * 2. Invoke {@code maskingLayout.maskJsonTree(root)} which redacts any
+&nbsp;	 *    configured fields **in the same tree instance**.
+&nbsp;	 * 3. Serialize the final tree once and append a platform line-separator.
+&nbsp;	 * &lt;p&gt;
+&nbsp;	 * If *anything* inside the try-block throws, we fall back to
+&nbsp;	 * {@link #formatFallback} to ensure no PII is leaked and the application
+&nbsp;	 * keeps running.
+&nbsp;	 */
+&nbsp;	@Override
+&nbsp;	public String doLayout(ILoggingEvent ev) {
+&nbsp;		try {
+&nbsp;			/* 1 ─ Build the JSON tree */
+<b class="pc">&nbsp;			ObjectMapper mapper = prettyPrint ? PRETTY_MAPPER : COMPACT_MAPPER;</b>
+<b class="fc">&nbsp;			ObjectNode root = mapper.createObjectNode();</b>
+<b class="fc">&nbsp;			root.put(&quot;timestamp&quot;, ISO_FORMATTER.format(Instant.ofEpochMilli(ev.getTimeStamp())));</b>
+<b class="fc">&nbsp;			root.put(&quot;level&quot;, ev.getLevel().toString());</b>
+<b class="fc">&nbsp;			root.put(&quot;logger&quot;, ev.getLoggerName());</b>
+&nbsp;			// MDC context
+<b class="fc">&nbsp;			Map&lt;String, String&gt; mdc = ev.getMDCPropertyMap();</b>
+<b class="pc">&nbsp;			if (mdc != null &amp;&amp; !mdc.isEmpty()) {</b>
+<b class="fc">&nbsp;				mdc.forEach(root::put);</b>
+&nbsp;			}
+<b class="fc">&nbsp;			root.set(&quot;message&quot;, TextNode.valueOf(formatMessage(ev)));</b>
+<b class="fc">&nbsp;			if (ev.getThrowableProxy() != null) {</b>
+<b class="fc">&nbsp;				root.set(&quot;exception&quot;, TextNode.valueOf(formatException(ev)));</b>
+&nbsp;			}
+&nbsp;			/* 2 ─ Mask PII in-place */
+<b class="fc">&nbsp;			maskingLayout.maskJsonTree(root);</b>
+&nbsp;			/* 3 ─ Serialize once and return */
+<b class="fc">&nbsp;			return mapper.writeValueAsString(root) + System.lineSeparator();</b>
+&nbsp;		} catch (Exception ex) {
+<b class="fc">&nbsp;			return formatFallback(ev, ex);</b>
+&nbsp;		}
+&nbsp;	}
+&nbsp;
+&nbsp;	/**
+&nbsp;	 * Replace any “complex” argument objects with JSON so that the final
+&nbsp;	 * {@code message} field is readable *and* maskable.
+&nbsp;	 * &lt;p&gt;
+&nbsp;	 * Example                                                &lt;br&gt;
+&nbsp;	 * {@code log.info(&quot;response={}&quot;, respObj)}               &lt;br&gt;
+&nbsp;	 * – default SLF4J would output {@code response=com.demo.Resp@3c4a} &lt;br&gt;
+&nbsp;	 * – this method turns it into {@code response={&quot;code&quot;:200,&quot;body&quot;:&quot;ok&quot;}}.
+&nbsp;	 * &lt;p&gt;
+&nbsp;	 * The extra cost (~20 µs) is paid **only** when an argument is identified as
+&nbsp;	 * complex by {@link #isComplexObject(Object)}.
+&nbsp;	 */
+&nbsp;	private String formatMessage(ILoggingEvent event) {
+<b class="fc">&nbsp;		String formattedMessage = event.getFormattedMessage();</b>
+&nbsp;
+&nbsp;		// If arguments are present and contain objects, try to serialize them
+<b class="fc">&nbsp;		Object[] args = event.getArgumentArray();</b>
+<b class="pc">&nbsp;		if (args != null) {</b>
+<b class="nc">&nbsp;			for (Object arg : args) {</b>
+<b class="nc">&nbsp;				if (isComplexObject(arg)) {</b>
+&nbsp;					try {
+&nbsp;						// Replace object toString with JSON serialization (always compact in message)
+<b class="nc">&nbsp;						String objectJson = COMPACT_MAPPER.writeValueAsString(arg);</b>
+<b class="nc">&nbsp;						formattedMessage = formattedMessage.replace(arg.toString(), objectJson);</b>
+&nbsp;					} catch (Exception e) {
+&nbsp;						// Failed to serialize object argument to JSON - keep original (no need to log this)
+&nbsp;					}
+&nbsp;				}
+&nbsp;			}
+&nbsp;		}
+&nbsp;
+<b class="fc">&nbsp;		return formattedMessage;</b>
+&nbsp;	}
+&nbsp;
+&nbsp;	/**
+&nbsp;	 * Return {@code true} if the argument looks “complex” enough to justify JSON
+&nbsp;	 * serialization.  Primitive wrappers, Strings, enums and Numbers are treated
+&nbsp;	 * as *simple* and left as-is.
+&nbsp;	 */
+&nbsp;	private boolean isComplexObject(Object obj) {
+<b class="nc">&nbsp;		if (obj == null) return false;</b>
+&nbsp;
+<b class="nc">&nbsp;		Class&lt;?&gt; c = obj.getClass();</b>
+&nbsp;
+<b class="nc">&nbsp;		return !c.isPrimitive()                 // primitives</b>
+<b class="nc">&nbsp;				&amp;&amp; !c.equals(String.class)          // strings</b>
+<b class="nc">&nbsp;				&amp;&amp; !Number.class.isAssignableFrom(c) // all numeric wrappers</b>
+<b class="nc">&nbsp;				&amp;&amp; !c.equals(Boolean.class)         // Boolean wrapper</b>
+<b class="nc">&nbsp;				&amp;&amp; !c.isEnum();                     // enums</b>
+&nbsp;	}
+&nbsp;
+&nbsp;	/**
+&nbsp;	 * Condense the throwable into “Class: message” plus the first 10 stack frames
+&nbsp;	 * to keep the log line short.
+&nbsp;	 */
+&nbsp;	private String formatException(ILoggingEvent event) {
+<b class="fc">&nbsp;		var th = event.getThrowableProxy();</b>
+<b class="fc">&nbsp;		StringBuilder sb = new StringBuilder()</b>
+<b class="fc">&nbsp;				.append(th.getClassName()).append(&quot;: &quot;).append(th.getMessage());</b>
+&nbsp;
+<b class="fc">&nbsp;		var frames = th.getStackTraceElementProxyArray();</b>
+<b class="pc">&nbsp;		if (frames != null &amp;&amp; frames.length &gt; 0) {</b>
+<b class="fc">&nbsp;			sb.append(&quot;\n&quot;);</b>
+<b class="fc">&nbsp;			for (int i = 0, limit = Math.min(10, frames.length); i &lt; limit; i++) {</b>
+<b class="fc">&nbsp;				sb.append(&quot;\tat &quot;).append(frames[i]).append(&quot;\n&quot;);</b>
+&nbsp;			}
+&nbsp;		}
+<b class="fc">&nbsp;		return sb.toString();</b>
+&nbsp;	}
+&nbsp;
+&nbsp;	/**
+&nbsp;	 * Executed when *this* layout throws.  We log a minimal one-liner that
+&nbsp;	 * contains no PII but still indicates the error.
+&nbsp;	 */
+&nbsp;	private String formatFallback(ILoggingEvent event, Exception ex) {
+<b class="fc">&nbsp;		return String.format(&quot;%s [%s] %s - [LAYOUT ERROR] %s: %s%n&quot;,</b>
+<b class="fc">&nbsp;				ISO_FORMATTER.format(Instant.ofEpochMilli(event.getTimeStamp())),</b>
+<b class="fc">&nbsp;				event.getLevel(),</b>
+<b class="fc">&nbsp;				event.getLoggerName(),</b>
+<b class="fc">&nbsp;				ex.getClass().getSimpleName(),</b>
+<b class="fc">&nbsp;				ex.getMessage());</b>
+&nbsp;	}
+&nbsp;
+&nbsp;	@Override
+&nbsp;	public void start() {
+<b class="pc">&nbsp;		if (maskingLayout == null) {</b>
+<b class="nc">&nbsp;			addError(&quot;CRITICAL – PiiDataMasker missing, refusing to start&quot;);</b>
+<b class="nc">&nbsp;			throw new IllegalStateException(&quot;maskingLayout is REQUIRED&quot;);</b>
+&nbsp;		}
+<b class="fc">&nbsp;		maskingLayout.start();</b>
+<b class="fc">&nbsp;		super.start();</b>
+&nbsp;	}
+&nbsp;
+&nbsp;	@Override
+&nbsp;	public void stop() {
+<b class="fc">&nbsp;		maskingLayout.stop();</b>
+<b class="fc">&nbsp;		super.stop();</b>
+&nbsp;	}
+&nbsp;}
+&nbsp;
+</code>
+</pre>
+</div>
+
+<script type="text/javascript">
+(function() {
+    var msie = false, msie9 = false;
+    /*@cc_on
+      msie = true;
+      @if (@_jscript_version >= 9)
+        msie9 = true;
+      @end
+    @*/
+
+    if (!msie || msie && msie9) {
+      hljs.highlightAll()
+      hljs.initLineNumbersOnLoad();
+    }
+})();
+</script>
+
+<div class="footer">
+    
+    <div style="float:right;">generated on 2025-10-14 17:53</div>
+</div>
+</body>
+</html>

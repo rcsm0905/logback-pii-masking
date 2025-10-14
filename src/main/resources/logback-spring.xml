@@ -1,43 +1,35 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <configuration>
-  <!-- Spring profile-based configuration for local dev vs production -->
-
   <!-- Define the property once at the top -->
   <springProperty scope="context" name="logMaskFields" source="LOG_MASK_FIELDS"
     defaultValue="imageContent,ocrResult,ocrResultFormat,ocrResultDetail,CROPPED_FACE_FROM_DOC"/>
 
-  <!-- Local Dev: Pretty-printed JSON for readability -->
-  <springProfile name="local,dev">
+  <!-- Local: Pretty-printed JSON for readability -->
+  <springProfile name="local">
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
       <encoder class="ch.qos.logback.core.encoder.LayoutWrappingEncoder">
         <layout class="com.example.logging.JsonStructuredLayout">
           <prettyPrint>true</prettyPrint>
           <maskingLayout class="com.example.logging.PiiDataMasker">
-            <maskedFields>${logMaskFields}</maskedFields>
-            <maskToken>[REDACTED]</maskToken>
-            <ocrFields>ocrResultDetail</ocrFields>
-            <ocrMaskToken>[REDACTED]</ocrMaskToken>
-            <maxMessageSize>1000000</maxMessageSize>
-            <prettyPrint>true</prettyPrint>
+            <maskedFields>${logMaskFields}</maskedFields>   <!-- mandatory -->
+            <maskToken>[REDACTED]</maskToken>   <!-- mandatory -->
+            <maxMessageSize>1048576</maxMessageSize>   <!-- mandatory -->
           </maskingLayout>
         </layout>
       </encoder>
     </appender>
   </springProfile>
 
-  <!-- Production/Default: Compact JSON for CloudWatch/Lambda -->
-  <springProfile name="!local &amp; !dev">
+  <!-- Default: Compact JSON for CloudWatch/Lambda -->
+  <springProfile name="!local">
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
       <encoder class="ch.qos.logback.core.encoder.LayoutWrappingEncoder">
         <layout class="com.example.logging.JsonStructuredLayout">
           <prettyPrint>false</prettyPrint>
           <maskingLayout class="com.example.logging.PiiDataMasker">
-            <maskedFields>${logMaskFields}</maskedFields>
-            <maskToken>[REDACTED]</maskToken>
-            <ocrFields>ocrResultDetail</ocrFields>
-            <ocrMaskToken>[REDACTED]</ocrMaskToken>
-            <maxMessageSize>1000000</maxMessageSize>
-            <prettyPrint>false</prettyPrint>
+            <maskedFields>${logMaskFields}</maskedFields>   <!-- mandatory -->
+            <maskToken>[REDACTED]</maskToken>   <!-- mandatory -->
+            <maxMessageSize>1048576</maxMessageSize>   <!-- mandatory -->
           </maskingLayout>
         </layout>
       </encoder>

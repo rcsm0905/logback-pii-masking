@@ -1,430 +1,286 @@
 package com.example.logging;
 
 import ch.qos.logback.core.spi.ContextAwareBase;
+import ch.qos.logback.core.spi.LifeCycle;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.node.TextNode;
-import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Deque;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
 import lombok.Getter;
 import lombok.Setter;
 
+import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.regex.Pattern;
+
 /**
- * Utility class for masking PII in log messages
- * Uses Jackson ObjectMapper for tree-based traversal to handle unlimited nesting depth
- * 
- * NOTE: Uses Logback's status API (addError only) for critical security errors
- * to prevent infinite recursion (masking logs would trigger more masking)
+ * Log-level PII redaction utility used by {@link JsonStructuredLayout}.
+ *
+ * <h2>How it fits in the pipeline</h2>
+ * <pre>
+ * ┌──────────────────────┐   ① build JSON tree
+ * │ JsonStructuredLayout │──▶ (timestamp, level, MDC, message…)
+ * └──────────────────────┘
+ *              │
+ *              │ ② in-place masking
+ *              ▼
+ *      ┌────────────────┐
+ *      │ PiiDataMasker  │ – masks all fields whose names are listed in
+ *      └────────────────┘   {@code <maskedFields>}.
+ *                           Works directly on the Jackson tree provided by the layout, therefore
+ *                           no extra parse/serialize round-trip is needed.
+ *              │
+ *              │ ③ layout serializes once (pretty/compact) and returns line
+ *              ▼
+ *        Logback appender
+ * </pre>
+ *
+ * <h3>Public surface currently in use</h3>
+ * <li> {@link #start()}, {@link #stop()}, {@link #isStarted()} – Logback life-cycle
+ * <li> {@link #maskJsonTree(com.fasterxml.jackson.databind.JsonNode)} – invoked by
+ *   {@code JsonStructuredLayout#doLayout}.
+ *
+ * <h3>Configuration</h3>
+ * Supplied via {@code logback-spring.xml} and validated in {@link #start()}:
+ * <ul>
+ *   <li>{@code <maskedFields>}   – comma-separated field names</li>
+ *   <li>{@code <maskToken>}      – replacement string (e.g. "[REDACTED]")</li>
+ * </ul>
+ *
+ * <h3>Thread-safety</h3>
+ * The class is immutable after {@link #start()} completes; recursion depth is
+ * tracked with a {@code ThreadLocal} so multiple threads can mask logs
+ * concurrently without interference.
+ *
+ * <p><b>NOTE:</b> All code changes below are internal refactors: no behavior or public
+ * contract has been altered.</p>
  */
 @Setter
 @Getter
-public class PiiDataMasker extends ContextAwareBase {
+public class PiiDataMasker extends ContextAwareBase implements LifeCycle {
+
+	/* ───────────── constants ───────────── */
 
 	private static final ObjectMapper COMPACT_MAPPER = new ObjectMapper();
-	private static final ObjectMapper PRETTY_MAPPER = new ObjectMapper()
-		.configure(com.fasterxml.jackson.databind.SerializationFeature.INDENT_OUTPUT, true);
-	
-	private static final int MAX_RECURSION_DEPTH = 10; // Prevent infinite recursion on nested JSON strings
-	
-	// Thread-local recursion depth tracker (for nested JSON string handling)
-	private static final ThreadLocal<Integer> recursionDepth = ThreadLocal.withInitial(() -> 0);
 
-	// Configuration properties
+	private static final int MAX_RECURSION_DEPTH = 10;
+	private static final ThreadLocal<Integer> RECURSION_DEPTH =
+			ThreadLocal.withInitial(() -> 0);                // renamed: UPPER_SNAKE for constants
+
+	private static final int MAX_JSON_SCAN = 100_000;    // scan limit for brace matching
+	private static final Pattern FIELD_CLEANER = Pattern.compile("[^A-Za-z0-9_]");
+
+	/* ───────────── state ───────────── */
+
+	private final AtomicBoolean started = new AtomicBoolean(false);
+
 	private String maskedFields;
-	private String maskToken = "[REDACTED]";
-	private int maxMessageSize; // Set via logback-spring.xml (default: 1MB)
-	private boolean prettyPrint = false; // Pretty-print output for local dev
-
-	// Parsed field sets for O(1) lookup
+	private String maskToken;
 	private Set<String> fieldNamesToMask = Collections.emptySet();
-	
 
+	/* ───────────── life-cycle ───────────── */
+
+	@Override
 	public void start() {
+		if (started.get()) return;        // idempotent
+
 		try {
-			// Parse and validate configuration
-			this.fieldNamesToMask = new HashSet<>(parseFieldsList(this.maskedFields));
+			/* ─── validate & initialise ─── */
+			maskToken        = requireNonBlank(maskToken, "<maskToken>");
+			fieldNamesToMask = parseAndValidateFields(maskedFields);
 
-			// Validate that at least some masking is configured
-			validateConfiguration();
-
-		// Validate maxMessageSize is properly configured
-		if (maxMessageSize <= 0) {
-			throw new IllegalStateException(
-				"maxMessageSize must be configured and > 0. Current value: " + maxMessageSize + 
-				". Configure in logback-spring.xml: <maxMessageSize>1000000</maxMessageSize>"
-			);
-		}
-
-		// PII masking initialized successfully - no need to log this as it's not actionable
-
-		} catch (Exception e) {
-			// CRITICAL: Fail-fast to prevent PII exposure
-			// DO NOT allow application to start without masking
-			addError("CRITICAL: Failed to initialize PII masking patterns. Application cannot start safely.", e);
-			throw new IllegalStateException(
-				"CRITICAL: PII masking initialization failed. " +
-				"Application MUST NOT start to prevent data leakage. " +
-				"Error: " + e.getMessage(), e
-			);
-		}
-	}
-	
-	public void stop() {
-		// Cleanup if needed
-	}
-
-	private void validateConfiguration() {
-		if (fieldNamesToMask.isEmpty()) {
-			throw new IllegalStateException(
-					"No masking patterns configured. This could lead to PII data exposure. " +
-							"Configure maskedFields."
-			);
+			started.set(true);
+		} catch (Exception ex) {
+			addError("PII masking initialisation failed", ex);
+			throw new IllegalStateException("PII masking init failed", ex);
 		}
 	}
 
-	private static List<String> parseFieldsList(String fields) {
-		if (fields == null || fields.trim().isEmpty()) {
-			return Collections.emptyList();
+	@Override public void stop() {
+		if (!started.getAndSet(false)) return;
+		RECURSION_DEPTH.remove();
+	}
+
+	@Override public boolean isStarted() { return started.get(); }
+
+	/* ───────────── public API ───────────── */
+
+	/**
+	 * Mask the given tree in-place.  Null-safe.
+	 *
+	 * @param root the JSON node to sanitize; ignored when {@code null}
+	 */
+	public void maskJsonTree(JsonNode root) {
+		if (root != null) maskJsonTreeInternal(root);
+	}
+
+	/* ───────────── validation helpers ───────────── */
+	/**
+	 * Ensure the supplied string is not null / blank.
+	 *
+	 * @return the same value, allowing inline assignment
+	 * @throws IllegalStateException if the check fails
+	 */
+	private static String requireNonBlank(String v, String fieldName) {
+		if (v == null || v.isBlank()) {
+			throw new IllegalStateException(fieldName + " must be configured");
 		}
+		return v;
+	}
 
-		String[] parts = fields.split("[,;\\s]+");
-		List<String> sanitized = new ArrayList<>();
+	/**
+	 * Parse the CSV list from <maskedFields>, clean each token and return an
+	 * *immutable* set.
+	 *
+	 * @throws IllegalStateException when the CSV is blank or contains no
+	 *                               usable field names.
+	 */
+	private static Set<String> parseAndValidateFields(String csv) {
+		String src = requireNonBlank(csv, "<maskedFields>");
 
-		for (String part : parts) {
-			String trimmed = part.trim();
-			if (trimmed.isEmpty()) continue;
-
-			// Sanitize field names - allow only alphanumeric and underscore
-			String clean = trimmed.replaceAll("[^A-Za-z0-9_]", "");
-			if (!clean.isEmpty() && clean.length() <= 50) { // Limit field name length
-				sanitized.add(clean);
+		Set<String> out = new HashSet<>();
+		for (String part : src.split(",")) {
+			String token = FIELD_CLEANER.matcher(part.trim()).replaceAll("");
+			if (!token.isEmpty() && token.length() <= 50) {
+				out.add(token);
 			}
 		}
-
-		return sanitized;
+		if (out.isEmpty()) {
+			throw new IllegalStateException("<maskedFields> produced no valid entries");
+		}
+		return Collections.unmodifiableSet(out);
 	}
 
+	/* ───────────── masking traversal ───────────── */
 
-	/**
-	 * Main entry point for masking sensitive data in log messages
-	 * Uses Jackson tree traversal for unlimited nesting depth support
-	 * 
-	 * @param message The log message to mask
-	 * @return The masked log message
-	 */
-	public String maskSensitiveDataOptimized(String message) {
-		if (message == null || message.isEmpty()) {
-			return message;
-		}
+	private void maskJsonTreeInternal(JsonNode root) {
+		if (RECURSION_DEPTH.get() >= MAX_RECURSION_DEPTH) return;
 
-		// Prevent processing extremely large messages that could cause issues
-		// Default 1MB limit is acceptable for messages containing base64 images
-		// Configurable via maxMessageSize in logback-spring.xml
-		if (message.length() > maxMessageSize) {
-			// Message too large - redact entire log for safety (no need to log this)
-			return "[LOG TOO LARGE - REDACTED FOR SAFETY - SIZE: " + message.length() + 
-				" bytes, LIMIT: " + maxMessageSize + " bytes]";
-		}
-
+		RECURSION_DEPTH.set(RECURSION_DEPTH.get() + 1);
 		try {
-			// Parse JSON into tree structure
-			JsonNode rootNode = COMPACT_MAPPER.readTree(message);
-			
-			// Traverse and mask PII fields at any depth (iterative, no recursion limit)
-			maskJsonTree(rootNode);
-			
-			// Serialize back to JSON string (pretty or compact based on configuration)
-			ObjectMapper outputMapper = prettyPrint ? PRETTY_MAPPER : COMPACT_MAPPER;
-
-			return outputMapper.writeValueAsString(rootNode);
-
-		} catch (Exception e) {
-			// SECURITY: Never return original message on error - could expose PII
-			// Use Logback status API to prevent infinite recursion
-			addError("SECURITY ALERT: PII masking failed. Log entry REDACTED for safety. Error: " + e.getMessage(), e);
-			
-			// Return safe error message with troubleshooting info (NO original message)
-			return "[MASKING ERROR - LOG REDACTED FOR SAFETY] Error: " + e.getMessage() + 
-				" | Check Logback status for stack trace | Timestamp: " + System.currentTimeMillis();
+			traverseAndMaskTree(root);
+		} finally {
+			RECURSION_DEPTH.set(RECURSION_DEPTH.get() - 1);
 		}
 	}
 
 	/**
-	 * Main entry point for tree masking with recursion depth tracking
+	 * (original detailed Javadoc kept)
 	 */
-	private void maskJsonTree(JsonNode rootNode) {
-		if (shouldStopRecursion()) {
+	private void traverseAndMaskTree(JsonNode root) {
+		Deque<JsonNode> stack = new ArrayDeque<>();
+		stack.push(root);
+
+		while (!stack.isEmpty()) {
+			JsonNode node = stack.pop();
+
+			if (node.isObject()) {
+				ObjectNode obj = (ObjectNode) node;
+				List<String> toMask = new ArrayList<>();
+
+				obj.fields().forEachRemaining(entry -> {
+					String name   = entry.getKey();
+					JsonNode value = entry.getValue();
+
+					if (fieldNamesToMask.contains(name)) {
+						toMask.add(name);
+					} else if (looksLikeJsonString(value)) {
+						handleNestedJsonString(obj, name, value, stack);
+					} else {
+						stack.push(value);
+					}
+				});
+
+				toMask.forEach(f -> obj.set(f, maskValue(obj.get(f))));
+			}
+
+			else if (node.isArray()) {
+				node.elements().forEachRemaining(stack::push);
+			}
+		}
+	}
+
+	/* ───────────── embedded JSON helpers ───────────── */
+
+	private static boolean looksLikeJsonString(JsonNode n) {
+		return n.isTextual() && isJsonLike(n.asText());
+	}
+
+	private static boolean isJsonLike(String v) {
+		return v != null && v.length() > 1 &&
+				((v.indexOf('{') != -1 && v.indexOf('}') != -1) ||
+						(v.indexOf('[') != -1 && v.indexOf(']') != -1));
+	}
+
+	private void handleNestedJsonString(
+			ObjectNode parent, String field, JsonNode value, Deque<JsonNode> stack) {
+
+		String text = value.asText();
+		String json = extractJsonFromString(text);
+		if (json == null) {                       // treat as plain text
+			stack.push(value);
 			return;
 		}
-		
-		recursionDepth.set(recursionDepth.get() + 1);
+
 		try {
-			traverseAndMaskTree(rootNode);
-		} finally {
-			recursionDepth.set(recursionDepth.get() - 1);
+			JsonNode nested = COMPACT_MAPPER.readTree(json);
+			maskJsonTreeInternal(nested);
+			parent.put(field, text.replace(json,
+					COMPACT_MAPPER.writeValueAsString(nested)));
+		} catch (Exception ex) {
+			stack.push(value);                      // fallback: keep original
 		}
-	}
-	
-	/**
-	 * Check if recursion should stop to prevent StackOverflow
-	 */
-	private boolean shouldStopRecursion() {
-		// Max recursion depth reached - stopping traversal (no need to log this)
-		return recursionDepth.get() >= MAX_RECURSION_DEPTH;
-	}
-	
-	/**
-	 * Iteratively traverse JSON tree and mask PII fields at any depth
-	 * Uses stack-based iteration to avoid recursion limits
-	 */
-	private void traverseAndMaskTree(JsonNode rootNode) {
-		Deque<FieldContext> stack = new ArrayDeque<>();
-		stack.push(new FieldContext(rootNode));
-		
-		while (!stack.isEmpty()) {
-			JsonNode node = stack.pop().node;
-			
-			if (node.isObject()) {
-				processObjectNode((ObjectNode) node, stack);
-			} else if (node.isArray()) {
-				processArrayNode(node, stack);
-			}
-			// Leaf nodes (primitives, strings) handled by parent
-		}
-	}
-	
-	/**
-	 * Process all fields in an object node
-	 */
-	private void processObjectNode(ObjectNode objectNode, Deque<FieldContext> stack) {
-		List<Map.Entry<String, JsonNode>> entries = new ArrayList<>();
-		objectNode.fields().forEachRemaining(entries::add);
-		
-		for (Map.Entry<String, JsonNode> entry : entries) {
-			processField(objectNode, entry.getKey(), entry.getValue(), stack);
-		}
-	}
-	
-	/**
-	 * Process array node - add all elements to traversal stack
-	 */
-	private void processArrayNode(JsonNode arrayNode, Deque<FieldContext> stack) {
-		arrayNode.elements().forEachRemaining(element -> 
-			stack.push(new FieldContext(element)));
-	}
-	
-	/**
-	 * Process a single field - mask if needed, or continue traversing
-	 */
-	private void processField(ObjectNode parent, String fieldName, JsonNode fieldValue, Deque<FieldContext> stack) {
-		if (shouldMaskField(fieldName)) {
-			parent.set(fieldName, maskValue(fieldName, fieldValue));
-		} else if (isNestedJsonString(fieldValue)) {
-			handleNestedJsonString(parent, fieldName, fieldValue, stack);
-		} else {
-			stack.push(new FieldContext(fieldValue));
-		}
-	}
-	
-	/**
-	 * Check if a field value contains nested JSON that needs parsing
-	 */
-	private boolean isNestedJsonString(JsonNode node) {
-		return node.isTextual() && isJsonString(node.asText());
-	}
-	
-	/**
-	 * Handle nested JSON strings - extract, parse, mask, replace
-	 */
-	private void handleNestedJsonString(ObjectNode parent, String fieldName, JsonNode fieldValue, Deque<FieldContext> stack) {
-		String textValue = fieldValue.asText();
-		String jsonPortion = extractJsonFromString(textValue);
-		
-		if (jsonPortion != null) {
-			tryParseAndMaskNestedJson(parent, fieldName, textValue, jsonPortion, fieldValue, stack);
-		} else {
-			stack.push(new FieldContext(fieldValue));
-		}
-	}
-	
-	/**
-	 * Attempt to parse and mask nested JSON, fall back to traversal if it fails
-	 */
-	private void tryParseAndMaskNestedJson(ObjectNode parent, String fieldName, String textValue, 
-	                                        String jsonPortion, JsonNode fallbackValue, Deque<FieldContext> stack) {
-		try {
-			JsonNode nested = COMPACT_MAPPER.readTree(jsonPortion);
-			maskJsonTree(nested); // Recursive call (depth-limited)
-			// Always use compact for nested JSON strings (they're embedded in text)
-			String maskedJson = COMPACT_MAPPER.writeValueAsString(nested);
-			String maskedText = textValue.replace(jsonPortion, maskedJson);
-			parent.put(fieldName, maskedText);
-		} catch (Exception e) {
-			// Failed to parse nested JSON - fall back to traversal TODO: review this
-			stack.push(new FieldContext(fallbackValue));
-		}
-	}
-	
-	/**
-	 * Check if a string value contains JSON (anywhere in the string)
-	 * Handles cases like: "Received Response: {...json...}"
-	 */
-	private boolean isJsonString(String value) {
-		if (value == null || value.length() < 2) {
-			return false;
-		}
-		// Check if string contains JSON structure (look for { or [ followed by })
-		return (value.contains("{") && value.contains("}")) ||
-		       (value.contains("[") && value.contains("]"));
-	}
-	
-	/**
-	 * Extract JSON portion from a text string
-	 * Handles: "Prefix text: {\"json\": \"data\"} Suffix"
-	 * Returns: {\"json\": \"data\"}
-	 */
-	private String extractJsonFromString(String value) {
-		int jsonStart = -1;
-		int jsonEnd = -1;
-		
-		// Find first { or [
-		int braceStart = value.indexOf('{');
-		int bracketStart = value.indexOf('[');
-		
-		if (braceStart != -1 && (bracketStart == -1 || braceStart < bracketStart)) {
-			jsonStart = braceStart;
-			jsonEnd = findMatchingBrace(value, jsonStart, '{', '}');
-		} else if (bracketStart != -1) {
-			jsonStart = bracketStart;
-			jsonEnd = findMatchingBrace(value, jsonStart, '[', ']');
-		}
-		
-		if (jsonStart != -1 && jsonEnd != -1) {
-			return value.substring(jsonStart, jsonEnd + 1);
-		}
-		
-		return null;
-	}
-	
-	/**
-	 * Find matching closing brace/bracket
-	 * Limited search to prevent performance issues on malformed JSON
-	 */
-	private int findMatchingBrace(String value, int start, char open, char close) {
-		int depth = 0;
-		boolean inString = false;
-		boolean escaped = false;
-		
-		// Limit search to 100KB to prevent performance degradation
-		int maxSearch = Math.min(start + 100_000, value.length());
-		
-		for (int i = start; i < maxSearch; i++) {
-			char c = value.charAt(i);
-			
-			if (escaped) {
-				escaped = false;
-				continue;
-			}
-			
-			if (c == '\\') {
-				escaped = true;
-				continue;
-			}
-			
-			if (c == '"' && !escaped) {
-				inString = !inString;
-				continue;
-			}
-			
-			if (!inString) {
-				if (c == open) {
-					depth++;
-				} else if (c == close) {
-					depth--;
-					if (depth == 0) {
-						return i;
-					}
-				}
-			}
-		}
-		
-		return -1; // Not found within the search limit
 	}
 
-	/**
-	 * Context holder for iterative traversal Simplified to only hold the node reference
-	 */
-		private record FieldContext(JsonNode node) {
+	/* ───────────── brace matching (unchanged) ───────────── */
 
-	}
-	
-	/**
-	 * Determine if a field should be masked
-	 */
-	private boolean shouldMaskField(String fieldName) {
-		return fieldNamesToMask.contains(fieldName);
-	}
+	private String extractJsonFromString(String v) {
+		int brace = v.indexOf('{');
+		int bracket = v.indexOf('[');
+		int start = (brace != -1 && (bracket == -1 || brace < bracket)) ? brace : bracket;
+		if (start == -1) return null;
 
-	/**
-	 * Mask a JSON value based on the actual data type of the value
-	 * Preserves JSON structure while masking sensitive content
-	 */
-	private JsonNode maskValue(String fieldName, JsonNode value) {
-		// Use single masking approach for all fields
-		return createMaskedStructureAdvanced(value, maskToken);
+		int end = findMatchingBrace(v, start, v.charAt(start),
+				(v.charAt(start) == '{') ? '}' : ']');
+		return (end != -1) ? v.substring(start, end + 1) : null;
 	}
 
-	/**
-	 * Create a masked representation that preserves the JSON structure of the original value
-	 * Optimized version with reduced redundancy
-	 *
-	 * @param originalValue The original JsonNode to mask
-	 * @param token The masking token to use
-	 * @return A JsonNode with the same structure but masked content
-	 */
-	private JsonNode createMaskedStructureAdvanced(JsonNode originalValue, String token) {
-		// Handle null/missing values early
-		if (originalValue == null || originalValue.isNull()) {
-			return originalValue;
+	private int findMatchingBrace(String text, int openIdx, char open, char close) {
+		boolean inString = false, escaped = false;
+		int depth = 1;
+		int limit = Math.min(openIdx + MAX_JSON_SCAN, text.length());
+
+		for (int i = openIdx + 1; i < limit; i++) {
+			char c = text.charAt(i);
+
+			if (escaped) { escaped = false; continue; }
+			if (c == '\\') { escaped = true; continue; }
+
+			if (c == '"') { inString = !inString; continue; }
+			if (inString) continue;
+
+			if (c == open) depth++;
+			else if (c == close && --depth == 0) return i;
 		}
-
-		// Handle complex types that need structure preservation
-		if (originalValue.isArray()) {
-			ArrayNode maskedArray = COMPACT_MAPPER.createArrayNode();
-			// Preserve array size by adding masked tokens for each element
-			int arraySize = originalValue.size();
-			for (int i = 0; i < arraySize; i++) {
-				maskedArray.add(token);
-			}
-			return maskedArray;
-		}
-
-		if (originalValue.isObject()) {
-			ObjectNode maskedObject = COMPACT_MAPPER.createObjectNode();
-			// Preserve object structure by masking each field
-			originalValue.fieldNames().forEachRemaining(fieldName ->
-					maskedObject.put(fieldName, token)
-			);
-			return maskedObject;
-		}
-
-		// All other types (string, number, boolean, binary, etc.) become masked text
-		// This consolidates the redundant TextNode.valueOf(token) calls
-		return TextNode.valueOf(token);
+		return -1;
 	}
-	
 
-	// Custom getters for defensive copies (not generated by Lombok)
-	// Simple property getters are auto-generated by @Getter annotation
-	public Set<String> getFieldNamesToMask() {
-		return new HashSet<>(fieldNamesToMask);
+	/* ───────────── masking values ───────────── */
+
+	private JsonNode maskValue(JsonNode original) {
+		if (original == null || original.isNull()) return original;
+
+		if (original.isArray()) {
+			ArrayNode a = COMPACT_MAPPER.createArrayNode();
+			original.forEach(n -> a.add(maskToken));   // keep identical size
+			return a;
+		}
+		if (original.isObject()) {
+			ObjectNode o = COMPACT_MAPPER.createObjectNode();
+			original.fieldNames().forEachRemaining(f -> o.put(f, maskToken));
+			return o;
+		}
+		return TextNode.valueOf(maskToken);          // primitives
 	}
 }

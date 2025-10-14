@@ -1,193 +1,178 @@
 package com.example.logging;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
 import ch.qos.logback.classic.Level;
-import ch.qos.logback.classic.LoggerContext;
 import ch.qos.logback.classic.spi.ILoggingEvent;
-import ch.qos.logback.classic.spi.LoggingEvent;
-import ch.qos.logback.classic.Logger;
-import ch.qos.logback.core.Context;
+import ch.qos.logback.classic.spi.ThrowableProxy;
+import java.lang.reflect.Field;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.lang.reflect.Method;
+import java.util.Collections;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.slf4j.LoggerFactory;
-
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.Mockito.*;
 
 /**
- * Integration tests for JsonStructuredLayout
- * Tests console output format and PII masking integration
+ * Completes coverage for every remaining branch/method in
+ * {@link JsonStructuredLayout}.
  */
-class JsonStructuredLayoutTest {
+class JsonStructuredLayoutExhaustiveTest {
+
+	private static final ObjectMapper JSON = new ObjectMapper();
 
 	private JsonStructuredLayout layout;
-	private PiiDataMasker masker;
-	private Logger logger;
-	private ObjectMapper objectMapper;
+
+	/* ────────────────────  test bootstrapping  ──────────────────── */
 
 	@BeforeEach
-	void setUp() {
-		logger = (Logger) LoggerFactory.getLogger("test.logger");
-		objectMapper = new ObjectMapper();
-		
-		// Set up Logback context for status messages (prevents warnings)
-		Context mockContext = mock(Context.class);
-		
-		// Setup masker
-		masker = new PiiDataMasker();
-		masker.setMaskedFields("NAME,ID_NUMBER,SSN");
-		masker.setMaskToken("[REDACTED]");
-		masker.setOcrFields("ocrResultDetail");
-		masker.setOcrMaskToken("[REDACTED]");
-		masker.setMaxMessageSize(1000000);
-		masker.setContext(mockContext);
+	void givenStartedLayout_WhenBootstrapping_ThenReadyForUse() {
+		// full-featured masker
+		PiiDataMasker masker = new PiiDataMasker();
+		masker.setMaskedFields("secret");
+		masker.setMaskToken("###");
 		masker.start();
-		
-		// Setup layout
+
 		layout = new JsonStructuredLayout();
 		layout.setMaskingLayout(masker);
-		layout.setPrettyPrint(false); // Compact for tests
-		layout.setContext(mockContext);
 		layout.start();
 	}
 
+	@AfterEach
+	void whenTearDown_ThenLayoutIsStopped() {
+		layout.stop();
+	}
+
+	/* ─────────────── doLayout() remaining branches ─────────────── */
+
 	@Test
-	void testBasicLogOutput() throws Exception {
-		LoggingEvent event = new LoggingEvent(
-			"com.example.logging.JsonStructuredLayoutTest",
-			logger,
-			Level.INFO,
-			"Test message",
-			null,
-			null
-		);
-		event.setTimeStamp(System.currentTimeMillis());
-		
-		String output = layout.doLayout(event);
-		
-		// Verify it's valid JSON
-		assertDoesNotThrow(() -> objectMapper.readTree(output), "Output should be valid JSON");
-		
-		// Verify structure
-		JsonNode json = objectMapper.readTree(output);
-		assertTrue(json.has("timestamp"), "Should have timestamp");
-		assertTrue(json.has("level"), "Should have level");
-		assertTrue(json.has("logger"), "Should have logger");
-		assertTrue(json.has("message"), "Should have message");
-		assertEquals("INFO", json.get("level").asText());
-		assertEquals("test.logger", json.get("logger").asText());
+	void nullMdcAndNoThrowable_WhenDoLayout_ThenJsonProduced() throws Exception {
+		// Mock the logging event to avoid NullPointerException with MDC
+		ILoggingEvent ev = mock(ILoggingEvent.class);
+		when(ev.getLevel()).thenReturn(Level.INFO);
+		when(ev.getTimeStamp()).thenReturn(System.currentTimeMillis());
+		when(ev.getLoggerName()).thenReturn("JUnit");
+		when(ev.getMessage()).thenReturn("plain");
+		when(ev.getFormattedMessage()).thenReturn("plain");
+		when(ev.getMDCPropertyMap()).thenReturn(null);  // ← null-MDC path
+		when(ev.getArgumentArray()).thenReturn(null);
+		when(ev.getThrowableProxy()).thenReturn(null);
+
+		String out = layout.doLayout(ev);
+
+		// ① must not be the fallback line
+		assertThat(out).doesNotContain("[LAYOUT ERROR]");
+
+		// ② locate the JSON start safely and parse
+		int brace = out.indexOf('{');
+		assertThat(brace).isNotNegative();
+
+		JsonNode root = JSON.readTree(out.substring(brace));
+		assertThat(root.get("logger").asText()).isEqualTo("JUnit");
+		assertThat(root.has("exception")).isFalse();
+	}
+
+	/* ─────────────── formatMessage() variations ─────────────── */
+
+	@Test
+	void simpleStringArg_WhenFormatMessage_ThenLeftUntouched() throws Exception {
+		// Mock the logging event with proper message formatting
+		ILoggingEvent ev = mock(ILoggingEvent.class);
+		when(ev.getMessage()).thenReturn("hello {}");
+		when(ev.getFormattedMessage()).thenReturn("hello Bob");
+		when(ev.getArgumentArray()).thenReturn(new Object[] { "Bob" });
+		when(ev.getMDCPropertyMap()).thenReturn(Collections.emptyMap());
+		when(ev.getThrowableProxy()).thenReturn(null);
+
+		Method m = JsonStructuredLayout.class.getDeclaredMethod(
+				"formatMessage", ILoggingEvent.class);
+		m.setAccessible(true);
+
+		assertThat(m.invoke(layout, ev)).isEqualTo("hello Bob");
 	}
 
 	@Test
-	void testPiiMaskingInLog() throws Exception {
-		LoggingEvent event = new LoggingEvent(
-			"com.example.logging.JsonStructuredLayoutTest",
-			logger,
-			Level.INFO,
-			"User data: {\"NAME\":\"John Doe\",\"ID_NUMBER\":\"123-45-6789\"}",
-			null,
-			null
-		);
-		event.setTimeStamp(System.currentTimeMillis());
-		
-		String output = layout.doLayout(event);
-		
-		// Verify PII is masked
-		assertFalse(output.contains("John Doe"), "PII should be masked in output");
-		assertFalse(output.contains("123-45-6789"), "PII should be masked in output");
-		assertTrue(output.contains("[REDACTED]"), "Should contain [REDACTED]");
+	void noArguments_WhenFormatMessage_ThenMessageReturnedAsIs() throws Exception {
+		ILoggingEvent ev = event("stand-alone message", null);
+
+		Method m = JsonStructuredLayout.class.getDeclaredMethod(
+				"formatMessage", ILoggingEvent.class);
+		m.setAccessible(true);
+
+		assertThat(m.invoke(layout, ev)).isEqualTo("stand-alone message");
 	}
 
-	@Test
-	void testPrettyPrintMode() throws Exception {
-		layout.setPrettyPrint(true);
-		masker.setPrettyPrint(true);
-		
-		LoggingEvent event = new LoggingEvent(
-			"com.example.logging.JsonStructuredLayoutTest",
-			logger,
-			Level.INFO,
-			"Test",
-			null,
-			null
-		);
-		event.setTimeStamp(System.currentTimeMillis());
-		
-		String output = layout.doLayout(event);
-		
-		// Pretty print should have multiple lines and indentation
-		assertTrue(output.contains("\n"), "Pretty print should have newlines");
-		assertTrue(output.contains("  "), "Pretty print should have indentation");
-	}
+	/* ─────────────── isComplexObject() negative cases ─────────────── */
 
 	@Test
-	void testCompactMode() throws Exception {
-		layout.setPrettyPrint(false);
-		masker.setPrettyPrint(false);
-		
-		LoggingEvent event = new LoggingEvent(
-			"com.example.logging.JsonStructuredLayoutTest",
-			logger,
-			Level.INFO,
-			"Test",
-			null,
-			null
-		);
-		event.setTimeStamp(System.currentTimeMillis());
-		
-		String output = layout.doLayout(event);
-		
-		// Compact should be single line (ends with newline)
-		assertTrue(output.endsWith("\n"), "Should end with newline");
-		// Remove trailing newline and check no other newlines exist
-		String withoutTrailingNewline = output.substring(0, output.length() - 1);
-		assertFalse(withoutTrailingNewline.contains("\n"), "Should be single line (compact mode)");
+	void primitiveStringAndEnum_WhenIsComplexObject_ThenReturnFalse() throws Exception {
+		Method m = JsonStructuredLayout.class.getDeclaredMethod(
+				"isComplexObject", Object.class);
+		m.setAccessible(true);
+
+		assertThat(m.invoke(layout, 7)).isEqualTo(false);
+		assertThat(m.invoke(layout, "txt")).isEqualTo(false);
+		assertThat(m.invoke(layout, SampleEnum.A)).isEqualTo(false);
 	}
 
-	@Test
-	void testMaskingLayoutRequired() {
-		JsonStructuredLayout layoutWithoutMasker = new JsonStructuredLayout();
-		layoutWithoutMasker.setMaskingLayout(null); // Missing masker
-		
-		assertThrows(IllegalStateException.class, () -> layoutWithoutMasker.start(),
-			"Should throw exception if maskingLayout is not configured");
-	}
+	private enum SampleEnum { A }
+
+	/* ─────────────── formatException() zero-frames branch ─────────────── */
 
 	@Test
-	void testExceptionFormatting() throws Exception {
-		LoggingEvent event = new LoggingEvent(
-			"com.example.logging.JsonStructuredLayoutTest",
-			logger,
-			Level.ERROR,
-			"An error occurred",
-			null,
-			null
-		);
-		event.setTimeStamp(System.currentTimeMillis());
+	void throwableProxyWithoutFrames_WhenFormatException_ThenSingleLine() throws Exception {
+		// Create a real ThrowableProxy instead of mocking to avoid Java 25 compatibility issues
+		Exception testException = new RuntimeException("oops");
+		ThrowableProxy proxy = new ThrowableProxy(testException);
 		
-		// Create a throwable proxy (simplified - in real scenario would be set by logging framework)
-		// For now, test that it doesn't crash when throwable is present
-		
-		String output = layout.doLayout(event);
-		
-		// Should still produce valid JSON
-		assertDoesNotThrow(() -> objectMapper.readTree(output));
-		JsonNode json = objectMapper.readTree(output);
-		assertEquals("ERROR", json.get("level").asText());
+		// Use reflection to set the stack trace to null to simulate zero frames
+		Field stackTraceField = ThrowableProxy.class.getDeclaredField("stackTraceElementProxyArray");
+		stackTraceField.setAccessible(true);
+		stackTraceField.set(proxy, null);
+
+		// Mock the logging event to avoid NullPointerException with MDC
+		ILoggingEvent ev = mock(ILoggingEvent.class);
+		when(ev.getThrowableProxy()).thenReturn(proxy);
+
+		Method fe = JsonStructuredLayout.class.getDeclaredMethod(
+				"formatException", ILoggingEvent.class);
+		fe.setAccessible(true);
+
+		String out = (String) fe.invoke(layout, ev);
+		assertThat(out.split("\n")).hasSize(1);     // only "RuntimeException: oops"
 	}
-	
+
+	/* ─────────────── formatFallback() helper ─────────────── */
+
 	@Test
-	void testDeepNestedPiiMasking() throws Exception {
-		String input = "{\"data\":{\"user\":{\"personal\":{\"info\":{\"NAME\":\"Alice\",\"SSN\":\"111-22-3333\"}}}}}";
-		String result = masker.maskSensitiveDataOptimized(input);
-		
-		JsonNode resultJson = objectMapper.readTree(result);
-		String nameValue = resultJson.at("/data/user/personal/info/NAME").asText();
-		String ssnValue = resultJson.at("/data/user/personal/info/SSN").asText();
-		
-		assertEquals("[REDACTED]", nameValue, "Deep nested NAME should be masked");
-		assertEquals("[REDACTED]", ssnValue, "Deep nested SSN should be masked");
+	void throwableInsideLayout_WhenFormatFallback_ThenMinimalOneLiner() throws Exception {
+		ILoggingEvent ev = event("irrelevant", null);
+		Exception boom = new IllegalStateException("fail");
+
+		Method ff = JsonStructuredLayout.class.getDeclaredMethod(
+				"formatFallback", ILoggingEvent.class, Exception.class);
+		ff.setAccessible(true);
+
+		String out = (String) ff.invoke(layout, ev, boom);
+		assertThat(out).contains("[LAYOUT ERROR] IllegalStateException: fail");
+	}
+
+	/* ─────────────── small helper ─────────────── */
+
+	private static ILoggingEvent event(String msg, Object[] args) {
+		// Mock the logging event to avoid NullPointerException with MDC
+		ILoggingEvent ev = mock(ILoggingEvent.class);
+		when(ev.getLevel()).thenReturn(Level.INFO);
+		when(ev.getTimeStamp()).thenReturn(System.currentTimeMillis());
+		when(ev.getLoggerName()).thenReturn("test");
+		when(ev.getMessage()).thenReturn(msg);
+		when(ev.getFormattedMessage()).thenReturn(msg);
+		when(ev.getArgumentArray()).thenReturn(args);
+		when(ev.getMDCPropertyMap()).thenReturn(Collections.emptyMap());
+		when(ev.getThrowableProxy()).thenReturn(null);
+		return ev;
 	}
 }
-
