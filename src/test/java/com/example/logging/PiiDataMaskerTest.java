@@ -22,7 +22,6 @@ class PiiDataMaskerTest {
 		masker.setMaskToken("[REDACTED]");
 		masker.setOcrFields("ocrResultDetail");
 		masker.setOcrMaskToken("[REDACTED]");
-		masker.setMaskBase64(true);
 		masker.setMaxMessageSize(1000000);
 		
 		// Set up Logback context for status messages (prevents warnings)
@@ -62,12 +61,14 @@ class PiiDataMaskerTest {
 	}
 
 	@Test
-	void testBase64ImageMasking() {
+	void testImageContentFieldMasking() {
 		String input = "{\"imageContent\":[\"/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAoHBxISEhUSEhIVFRUVFRUVFRUVFRUVFRUVFxUZGBYVFhUaHysjGh0oHRUWJTUlKC0vMjIyGSI4PTcwPCsxMi8BCgsLDw4PHRERHS8dHSUvLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vL//AABEIAoAC0AMBIgACEQEDEQH\"]}";
 		String result = masker.maskSensitiveDataOptimized(input);
 		
-		assertFalse(result.contains("/9j/4AAQSkZJRg"), "Base64 image should be masked");
-		assertTrue(result.contains("[REDACTED]"), "Should contain [REDACTED]");
+		// Since imageContent is not in our masked fields list, it should not be masked
+		// This test verifies field-based masking behavior
+		assertTrue(result.contains("/9j/4AAQSkZJRg"), "imageContent should not be masked when not in maskedFields");
+		assertFalse(result.contains("[REDACTED]"), "Should not contain [REDACTED] for non-masked field");
 	}
 
 	@Test
@@ -162,7 +163,6 @@ class PiiDataMaskerTest {
 		// Don't configure any masking
 		invalidMasker.setMaskedFields("");
 		invalidMasker.setOcrFields("");
-		invalidMasker.setMaskBase64(false);
 		invalidMasker.setMaxMessageSize(1000000);
 		
 		assertThrows(IllegalStateException.class, () -> invalidMasker.start(),

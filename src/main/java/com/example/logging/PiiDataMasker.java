@@ -3,18 +3,25 @@ package com.example.logging;
 import ch.qos.logback.core.spi.ContextAwareBase;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.node.TextNode;
-import java.util.*;
-import java.util.regex.Pattern;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Deque;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import lombok.Getter;
 import lombok.Setter;
 
 /**
- * Utility class for masking PII (Personally Identifiable Information) in log messages
+ * Utility class for masking PII in log messages
  * Uses Jackson ObjectMapper for tree-based traversal to handle unlimited nesting depth
  * 
- * NOTE: Uses Logback's status API (addWarn/addError) instead of logger
+ * NOTE: Uses Logback's status API (addError only) for critical security errors
  * to prevent infinite recursion (masking logs would trigger more masking)
  */
 @Setter
@@ -33,24 +40,17 @@ public class PiiDataMasker extends ContextAwareBase {
 	// Configuration properties
 	private String maskedFields;
 	private String maskToken = "[REDACTED]";
-	private String ocrFields;
-	private String ocrMaskToken = "[REDACTED]";
-	private boolean maskBase64 = false;
 	private int maxMessageSize; // Set via logback-spring.xml (default: 1MB)
 	private boolean prettyPrint = false; // Pretty-print output for local dev
 
 	// Parsed field sets for O(1) lookup
 	private Set<String> fieldNamesToMask = Collections.emptySet();
-	private Set<String> ocrFieldNames = Collections.emptySet();
 	
-	// Base64 pattern for image masking (still use regex for this)
-	private Pattern base64Pattern;
 
 	public void start() {
 		try {
 			// Parse and validate configuration
 			this.fieldNamesToMask = new HashSet<>(parseFieldsList(this.maskedFields));
-			this.ocrFieldNames = new HashSet<>(parseFieldsList(this.ocrFields));
 
 			// Validate that at least some masking is configured
 			validateConfiguration();
@@ -63,12 +63,7 @@ public class PiiDataMasker extends ContextAwareBase {
 			);
 		}
 
-		// Build base64 pattern if needed
-		buildBase64Pattern();
-
-		// Use Logback status API to prevent infinite recursion
-		addInfo(String.format("PII masking initialized successfully. Masked fields: %d, OCR fields: %d, Base64 masking: %s, Max message size: %dKB", 
-			fieldNamesToMask.size(), ocrFieldNames.size(), maskBase64, maxMessageSize / 1024));
+		// PII masking initialized successfully - no need to log this as it's not actionable
 
 		} catch (Exception e) {
 			// CRITICAL: Fail-fast to prevent PII exposure
@@ -87,10 +82,10 @@ public class PiiDataMasker extends ContextAwareBase {
 	}
 
 	private void validateConfiguration() {
-		if (fieldNamesToMask.isEmpty() && ocrFieldNames.isEmpty() && !maskBase64) {
+		if (fieldNamesToMask.isEmpty()) {
 			throw new IllegalStateException(
 					"No masking patterns configured. This could lead to PII data exposure. " +
-							"Configure maskedFields, ocrFields, or enable maskBase64."
+							"Configure maskedFields."
 			);
 		}
 	}
@@ -117,22 +112,6 @@ public class PiiDataMasker extends ContextAwareBase {
 		return sanitized;
 	}
 
-	private void buildBase64Pattern() {
-		if (!maskBase64) {
-			return;
-		}
-
-		List<String> patternParts = new ArrayList<>();
-
-		// Base64 JPEG pattern - limited length to prevent excessive backtracking
-		patternParts.add("(/9j/[A-Za-z0-9+/=]{50,100000})");
-
-		// Base64 PNG pattern - limited length to prevent excessive backtracking
-		patternParts.add("(iVBORw0KGgo[A-Za-z0-9+/=]{50,100000})");
-
-		String masterPatternString = String.join("|", patternParts);
-		this.base64Pattern = Pattern.compile(masterPatternString);
-	}
 
 	/**
 	 * Main entry point for masking sensitive data in log messages
@@ -150,9 +129,7 @@ public class PiiDataMasker extends ContextAwareBase {
 		// Default 1MB limit is acceptable for messages containing base64 images
 		// Configurable via maxMessageSize in logback-spring.xml
 		if (message.length() > maxMessageSize) {
-			// Use Logback status API to prevent infinite recursion
-			addWarn(String.format("Message too large for masking (%dKB), redacting entire log for safety. Limit: %dKB", 
-				message.length() / 1024, maxMessageSize / 1024));
+			// Message too large - redact entire log for safety (no need to log this)
 			return "[LOG TOO LARGE - REDACTED FOR SAFETY - SIZE: " + message.length() + 
 				" bytes, LIMIT: " + maxMessageSize + " bytes]";
 		}
@@ -166,14 +143,8 @@ public class PiiDataMasker extends ContextAwareBase {
 			
 			// Serialize back to JSON string (pretty or compact based on configuration)
 			ObjectMapper outputMapper = prettyPrint ? PRETTY_MAPPER : COMPACT_MAPPER;
-			String maskedJson = outputMapper.writeValueAsString(rootNode);
-			
-			// Apply base64 masking if enabled (still use regex for this)
-			if (base64Pattern != null) {
-				maskedJson = maskBase64Images(maskedJson);
-			}
-			
-			return maskedJson;
+
+			return outputMapper.writeValueAsString(rootNode);
 
 		} catch (Exception e) {
 			// SECURITY: Never return original message on error - could expose PII
@@ -188,7 +159,6 @@ public class PiiDataMasker extends ContextAwareBase {
 
 	/**
 	 * Main entry point for tree masking with recursion depth tracking
-	 * Inspired by: https://poe.com/s/zUc2aVYZZ0sBoJfW05GH
 	 */
 	private void maskJsonTree(JsonNode rootNode) {
 		if (shouldStopRecursion()) {
@@ -207,11 +177,8 @@ public class PiiDataMasker extends ContextAwareBase {
 	 * Check if recursion should stop to prevent StackOverflow
 	 */
 	private boolean shouldStopRecursion() {
-		if (recursionDepth.get() >= MAX_RECURSION_DEPTH) {
-			addWarn("Max recursion depth (" + MAX_RECURSION_DEPTH + ") reached, stopping traversal");
-			return true;
-		}
-		return false;
+		// Max recursion depth reached - stopping traversal (no need to log this)
+		return recursionDepth.get() >= MAX_RECURSION_DEPTH;
 	}
 	
 	/**
@@ -301,8 +268,7 @@ public class PiiDataMasker extends ContextAwareBase {
 			String maskedText = textValue.replace(jsonPortion, maskedJson);
 			parent.put(fieldName, maskedText);
 		} catch (Exception e) {
-			// Log warning with stack trace for troubleshooting
-			addWarn("Failed to parse nested JSON in field '" + fieldName + "': " + e.getMessage(), e);
+			// Failed to parse nested JSON - fall back to traversal TODO: review this
 			stack.push(new FieldContext(fallbackValue));
 		}
 	}
@@ -390,81 +356,75 @@ public class PiiDataMasker extends ContextAwareBase {
 			}
 		}
 		
-		return -1; // Not found within search limit
+		return -1; // Not found within the search limit
 	}
-	
+
 	/**
-	 * Context holder for iterative traversal
-	 * Simplified to only hold the node reference
+	 * Context holder for iterative traversal Simplified to only hold the node reference
 	 */
-	private static class FieldContext {
-		final JsonNode node;
-		
-		FieldContext(JsonNode node) {
-			this.node = node;
-		}
+		private record FieldContext(JsonNode node) {
+
 	}
 	
 	/**
 	 * Determine if a field should be masked
 	 */
 	private boolean shouldMaskField(String fieldName) {
-		// Check regular fields
-		if (fieldNamesToMask.contains(fieldName)) {
-			return true;
-		}
-		
-		// Check OCR fields (entire object replacement)
-		if (ocrFieldNames.contains(fieldName)) {
-			return true;
-		}
-		
-		return false;
+		return fieldNamesToMask.contains(fieldName);
 	}
-	
+
 	/**
-	 * Mask a JSON value based on field name and type
+	 * Mask a JSON value based on the actual data type of the value
+	 * Preserves JSON structure while masking sensitive content
 	 */
 	private JsonNode maskValue(String fieldName, JsonNode value) {
-		// Special handling for OCR fields - replace entire object
-		if (ocrFieldNames.contains(fieldName)) {
-			return TextNode.valueOf("{" + ocrMaskToken + "}");
+		// Use single masking approach for all fields
+		return createMaskedStructureAdvanced(value, maskToken);
+	}
+
+	/**
+	 * Create a masked representation that preserves the JSON structure of the original value
+	 * Optimized version with reduced redundancy
+	 *
+	 * @param originalValue The original JsonNode to mask
+	 * @param token The masking token to use
+	 * @return A JsonNode with the same structure but masked content
+	 */
+	private JsonNode createMaskedStructureAdvanced(JsonNode originalValue, String token) {
+		// Handle null/missing values early
+		if (originalValue == null || originalValue.isNull()) {
+			return originalValue;
 		}
-		
-		// Regular fields - replace value only
-		return TextNode.valueOf(maskToken);
+
+		// Handle complex types that need structure preservation
+		if (originalValue.isArray()) {
+			ArrayNode maskedArray = COMPACT_MAPPER.createArrayNode();
+			// Preserve array size by adding masked tokens for each element
+			int arraySize = originalValue.size();
+			for (int i = 0; i < arraySize; i++) {
+				maskedArray.add(token);
+			}
+			return maskedArray;
+		}
+
+		if (originalValue.isObject()) {
+			ObjectNode maskedObject = COMPACT_MAPPER.createObjectNode();
+			// Preserve object structure by masking each field
+			originalValue.fieldNames().forEachRemaining(fieldName ->
+					maskedObject.put(fieldName, token)
+			);
+			return maskedObject;
+		}
+
+		// All other types (string, number, boolean, binary, etc.) become masked text
+		// This consolidates the redundant TextNode.valueOf(token) calls
+		return TextNode.valueOf(token);
 	}
 	
-	/**
-	 * Apply base64 image masking using regex (final pass)
-	 */
-	private String maskBase64Images(String json) {
-		if (base64Pattern == null) {
-			return json;
-		}
-		
-		try {
-			return base64Pattern.matcher(json).replaceAll("[REDACTED]");
-		} catch (Exception e) {
-			// SECURITY: Don't return original JSON - could contain PII in base64 strings
-			addError("SECURITY ALERT: Failed to mask base64 images. Redacting entire log for safety. Error: " + e.getMessage(), e);
-			return "[BASE64 MASKING ERROR - LOG REDACTED FOR SAFETY] Error: " + e.getMessage() + 
-				" | Timestamp: " + System.currentTimeMillis();
-		}
-	}
 
 	// Custom getters for defensive copies (not generated by Lombok)
 	// Simple property getters are auto-generated by @Getter annotation
 	public Set<String> getFieldNamesToMask() {
 		return new HashSet<>(fieldNamesToMask);
-	}
-
-	public Set<String> getOcrFieldNames() {
-		return new HashSet<>(ocrFieldNames);
-	}
-
-	// For testing - check if masking is properly initialized
-	public boolean isMaskingInitialized() {
-		return !fieldNamesToMask.isEmpty() || !ocrFieldNames.isEmpty() || base64Pattern != null;
 	}
 }

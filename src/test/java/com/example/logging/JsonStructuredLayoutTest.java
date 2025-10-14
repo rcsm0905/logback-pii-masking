@@ -40,7 +40,6 @@ class JsonStructuredLayoutTest {
 		masker.setMaskToken("[REDACTED]");
 		masker.setOcrFields("ocrResultDetail");
 		masker.setOcrMaskToken("[REDACTED]");
-		masker.setMaskBase64(true);
 		masker.setMaxMessageSize(1000000);
 		masker.setContext(mockContext);
 		masker.start();

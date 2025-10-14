@@ -1,7 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <configuration>
   <!-- Spring profile-based configuration for local dev vs production -->
-  
+
+  <!-- Define the property once at the top -->
+  <springProperty scope="context" name="logMaskFields" source="LOG_MASK_FIELDS"
+    defaultValue="imageContent,ocrResult,ocrResultFormat,ocrResultDetail,CROPPED_FACE_FROM_DOC"/>
+
   <!-- Local Dev: Pretty-printed JSON for readability -->
   <springProfile name="local,dev">
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
@@ -9,11 +13,8 @@
         <layout class="com.example.logging.JsonStructuredLayout">
           <prettyPrint>true</prettyPrint>
           <maskingLayout class="com.example.logging.PiiDataMasker">
-            <maskedFields>
-              ${LOG_MASK_FIELDS:imageContent,STANDARDIZED_DATE_OF_BIRTH,LATEST_ISSUE_DATE,ID_NUMBER,SEX,STANDARDIZED_LATEST_ISSUE_DATE,NAME,NAME_CN,CHINESE_COMMERCIAL_CODE,ISSUE_DATE,SYMBOLS,DATE_OF_BIRTH,PERMANENT_RESIDENT_STATUS,NAME_CN_RAW,CROPPED_FACE_FROM_DOC,NATIONALITY,NUMBER,LAST_NAME_EN,MIDDLE_NAME_EN,LAST_NAME,NATIONALITY_CODE,COUNTRY_OF_BIRTH_CODE,FIRST_NAME,DATE_OF_EXPIRY,FIRST_NAME_EN,FULL_NAME_EN,ISSUE_STATE,ADDRESS,FULL_NAME,ISSUE_STATE_CODE,MRZ1,GENDER,MIDDLE_NAME,COUNTRY_OF_BIRTH,DATE_OF_ISSUE}
-            </maskedFields>
+            <maskedFields>${logMaskFields}</maskedFields>
             <maskToken>[REDACTED]</maskToken>
-            <maskBase64>true</maskBase64>
             <ocrFields>ocrResultDetail</ocrFields>
             <ocrMaskToken>[REDACTED]</ocrMaskToken>
             <maxMessageSize>1000000</maxMessageSize>
@@ -23,7 +24,7 @@
       </encoder>
     </appender>
   </springProfile>
-  
+
   <!-- Production/Default: Compact JSON for CloudWatch/Lambda -->
   <springProfile name="!local &amp; !dev">
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
@@ -31,11 +32,8 @@
         <layout class="com.example.logging.JsonStructuredLayout">
           <prettyPrint>false</prettyPrint>
           <maskingLayout class="com.example.logging.PiiDataMasker">
-            <maskedFields>
-              ${LOG_MASK_FIELDS:imageContent,STANDARDIZED_DATE_OF_BIRTH,LATEST_ISSUE_DATE,ID_NUMBER,SEX,STANDARDIZED_LATEST_ISSUE_DATE,NAME,NAME_CN,CHINESE_COMMERCIAL_CODE,ISSUE_DATE,SYMBOLS,DATE_OF_BIRTH,PERMANENT_RESIDENT_STATUS,NAME_CN_RAW,CROPPED_FACE_FROM_DOC,NATIONALITY,NUMBER,LAST_NAME_EN,MIDDLE_NAME_EN,LAST_NAME,NATIONALITY_CODE,COUNTRY_OF_BIRTH_CODE,FIRST_NAME,DATE_OF_EXPIRY,FIRST_NAME_EN,FULL_NAME_EN,ISSUE_STATE,ADDRESS,FULL_NAME,ISSUE_STATE_CODE,MRZ1,GENDER,MIDDLE_NAME,COUNTRY_OF_BIRTH,DATE_OF_ISSUE}
-            </maskedFields>
+            <maskedFields>${logMaskFields}</maskedFields>
             <maskToken>[REDACTED]</maskToken>
-            <maskBase64>true</maskBase64>
             <ocrFields>ocrResultDetail</ocrFields>
             <ocrMaskToken>[REDACTED]</ocrMaskToken>
             <maxMessageSize>1000000</maxMessageSize>

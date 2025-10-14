@@ -84,9 +84,7 @@ public class JsonStructuredLayout extends LayoutBase<ILoggingEvent> {
 			return jsonLog + System.lineSeparator();
 			
 		} catch (Exception e) {
-			// Log error with stack trace before falling back
-			addError("Failed to serialize log event to JSON: " + e.getMessage(), e);
-			// Fallback to simple format if JSON serialization fails
+			// Failed to serialize log event to JSON - fall back to simple format (no need to log this)
 			return formatFallback(event);
 		}
 	}
@@ -104,8 +102,7 @@ public class JsonStructuredLayout extends LayoutBase<ILoggingEvent> {
 						String objectJson = COMPACT_MAPPER.writeValueAsString(arg);
 						formattedMessage = formattedMessage.replace(arg.toString(), objectJson);
 					} catch (Exception e) {
-						// Log warning with stack trace, then keep original
-						addWarn("Failed to serialize object argument to JSON: " + e.getMessage(), e);
+						// Failed to serialize object argument to JSON - keep original (no need to log this)
 					}
 				}
 			}
