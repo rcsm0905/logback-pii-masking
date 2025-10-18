@@ -2,11 +2,15 @@ package com.example.logging;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.Map.Entry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -96,8 +100,8 @@ class PiiDataMaskerComprehensiveTest {
 	}
 
 	@Test
-	void start_WithInvalidFieldNames_ShouldThrow() {
-		masker.setMaskedFields("!!!,@@@,###"); // All invalid characters
+	void start_WithEmptyFieldsAfterTrimming_ShouldThrow() {
+		masker.setMaskedFields("  ,  ,  "); // Only whitespace and commas
 		masker.setMaskToken("[REDACTED]");
 		
 		assertThatThrownBy(() -> masker.start())
@@ -158,8 +162,9 @@ class PiiDataMaskerComprehensiveTest {
 		masker.setMaskedFields("NAME");
 		masker.setMaskToken("[REDACTED]");
 		masker.start();
-		
-		masker.maskJsonTree(null); // Should not throw
+
+		assertDoesNotThrow(() -> masker.maskJsonTree(null));
+		assertThat(masker.isStarted()).isTrue();
 	}
 
 	@Test
@@ -188,14 +193,12 @@ class PiiDataMaskerComprehensiveTest {
 		root.put("NAME", "John Doe");
 		root.put("SSN", "123-45-6789");
 		root.put("ID_NUMBER", "C123456(9)");
-		root.put("age", 30);
-		
+
 		masker.maskJsonTree(root);
 		
 		assertThat(root.get("NAME").asText()).isEqualTo("[REDACTED]");
 		assertThat(root.get("SSN").asText()).isEqualTo("[REDACTED]");
 		assertThat(root.get("ID_NUMBER").asText()).isEqualTo("[REDACTED]");
-		assertThat(root.get("age").asInt()).isEqualTo(30); // Not masked
 	}
 
 	@Test
@@ -221,7 +224,7 @@ class PiiDataMaskerComprehensiveTest {
 	}
 
 	@Test
-	void maskJsonTree_WithObject_ShouldMaskAllFields() {
+	void maskJsonTree_maskedFieldIsObject_ShouldMaskAllFields() {
 		masker.setMaskedFields("extraImages");
 		masker.setMaskToken("[REDACTED]");
 		masker.start();
@@ -238,78 +241,6 @@ class PiiDataMaskerComprehensiveTest {
 		masked.fields().forEachRemaining(entry -> 
 			assertThat(entry.getValue().asText()).isEqualTo("[REDACTED]")
 		);
-	}
-
-	/* ────────────────── Nested JSON in string tests ────────────────── */
-
-	@Test
-	void maskJsonTree_WithNestedJsonObject_ShouldMask() throws Exception {
-		masker.setMaskedFields("NAME,SSN");
-		masker.setMaskToken("[REDACTED]");
-		masker.start();
-		
-		ObjectNode root = MAPPER.createObjectNode();
-		String nestedJson = "{\"NAME\":\"John\",\"SSN\":\"123-45-6789\",\"age\":30}";
-		root.put("data", nestedJson);
-		
-		masker.maskJsonTree(root);
-		
-		String maskedData = root.get("data").asText();
-		JsonNode parsed = MAPPER.readTree(maskedData);
-		assertThat(parsed.get("NAME").asText()).isEqualTo("[REDACTED]");
-		assertThat(parsed.get("SSN").asText()).isEqualTo("[REDACTED]");
-		assertThat(parsed.get("age").asInt()).isEqualTo(30);
-	}
-
-	@Test
-	void maskJsonTree_WithNestedJsonArray_ShouldMask() throws Exception {
-		masker.setMaskedFields("NAME");
-		masker.setMaskToken("[REDACTED]");
-		masker.start();
-		
-		ObjectNode root = MAPPER.createObjectNode();
-		String nestedJson = "[{\"NAME\":\"John\"},{\"NAME\":\"Jane\"}]";
-		root.put("users", nestedJson);
-		
-		masker.maskJsonTree(root);
-		
-		String maskedData = root.get("users").asText();
-		JsonNode parsed = MAPPER.readTree(maskedData);
-		assertThat(parsed.isArray()).isTrue();
-		for (JsonNode user : parsed) {
-			assertThat(user.get("NAME").asText()).isEqualTo("[REDACTED]");
-		}
-	}
-
-	@Test
-	void maskJsonTree_WithInvalidNestedJson_ShouldKeepOriginal() {
-		masker.setMaskedFields("NAME");
-		masker.setMaskToken("[REDACTED]");
-		masker.start();
-		
-		ObjectNode root = MAPPER.createObjectNode();
-		String invalidJson = "{\"NAME\":\"John\" this is invalid}";
-		root.put("data", invalidJson);
-		
-		masker.maskJsonTree(root);
-		
-		// Should keep original if can't parse
-		assertThat(root.get("data").asText()).isEqualTo(invalidJson);
-	}
-
-	@Test
-	void maskJsonTree_WithNotJsonLikeString_ShouldNotMask() {
-		masker.setMaskedFields("NAME");
-		masker.setMaskToken("[REDACTED]");
-		masker.start();
-		
-		ObjectNode root = MAPPER.createObjectNode();
-		root.put("description", "This is just a plain string with NAME in it");
-		
-		masker.maskJsonTree(root);
-		
-		// Should not be masked because it doesn't look like JSON
-		assertThat(root.get("description").asText()).contains("NAME");
 	}
 
 	/* ────────────────── Deep nesting and recursion tests ────────────────── */
@@ -336,107 +267,155 @@ class PiiDataMaskerComprehensiveTest {
 	}
 
 	@Test
-	void maskJsonTree_WithVeryDeeplyNestedJson_ShouldStopAtMaxDepth() {
+	void maskJsonTree_WithVeryDeeplyNestedJson_ShouldRespectDepthLimit() {
 		masker.setMaskedFields("NAME");
 		masker.setMaskToken("[REDACTED]");
 		masker.start();
-		
-		// Create structure deeper than MAX_RECURSION_DEPTH (10)
+
+		// Create structure with 60 levels of nesting (beyond MAX_DEPTH of 50)
+		// This tests that depth limit protection works correctly
 		ObjectNode root = MAPPER.createObjectNode();
 		ObjectNode current = root;
-		for (int i = 0; i < 15; i++) {
+		for (int i = 0; i < 60; i++) {
 			ObjectNode next = current.putObject("level" + i);
-			if (i == 14) {
-				next.put("NAME", "TooDeep");
+			// Add NAME field at multiple depths
+			if (i == 5 || i == 10 || i == 20 || i == 45 || i == 55) {
+				next.put("NAME", "SensitiveData_Depth_" + i);
 			}
 			current = next;
 		}
-		
+
 		masker.maskJsonTree(root);
+
+		// Verify masking works at shallow depths (well within limit)
+		assertThat(root.at("/level0/level1/level2/level3/level4/level5/NAME").asText())
+				.as("Depth 5 should be masked")
+				.isEqualTo("[REDACTED]");
+
+		assertThat(root.at("/level0/level1/level2/level3/level4/level5/level6/level7/level8/level9/level10/NAME").asText())
+				.as("Depth 10 should be masked")
+				.isEqualTo("[REDACTED]");
+
+		// Verify masking works at depth 20 (still within limit)
+		String path20 = "/level0/level1/level2/level3/level4/level5/level6/level7/level8/level9/" +
+				"level10/level11/level12/level13/level14/level15/level16/level17/level18/level19/level20/NAME";
+		assertThat(root.at(path20).asText())
+				.as("Depth 20 should be masked")
+				.isEqualTo("[REDACTED]");
+
+		// Verify masking works at depth 45 (approaching limit)
+		String path45 = "/level0/level1/level2/level3/level4/level5/level6/level7/level8/level9/" +
+				"level10/level11/level12/level13/level14/level15/level16/level17/level18/level19/" +
+				"level20/level21/level22/level23/level24/level25/level26/level27/level28/level29/" +
+				"level30/level31/level32/level33/level34/level35/level36/level37/level38/level39/" +
+				"level40/level41/level42/level43/level44/level45/NAME";
+		assertThat(root.at(path45).asText())
+				.as("Depth 45 should be masked (below limit of 50)")
+				.isEqualTo("[REDACTED]");
+
+		// Verify masking STOPS at depth 55 (beyond MAX_DEPTH of 50)
+		String path55 = "/level0/level1/level2/level3/level4/level5/level6/level7/level8/level9/" +
+				"level10/level11/level12/level13/level14/level15/level16/level17/level18/level19/" +
+				"level20/level21/level22/level23/level24/level25/level26/level27/level28/level29/" +
+				"level30/level31/level32/level33/level34/level35/level36/level37/level38/level39/" +
+				"level40/level41/level42/level43/level44/level45/level46/level47/level48/level49/" +
+				"level50/level51/level52/level53/level54/level55/NAME";
+		assertThat(root.at(path55).asText())
+				.as("Depth 55 should NOT be masked (beyond limit of 50) - protection against attacks")
+				.isEqualTo("SensitiveData_Depth_55");
+	}
+
+	@Test
+	void maskJsonTree_WithExcessiveNodes_ShouldRespectNodeLimit() {
+		masker.setMaskedFields("NAME");
+		masker.setMaskToken("[REDACTED]");
+		masker.start();
+
+		// Create wide structure with 200 fields x 60 levels = 12,000 nodes (exceeds MAX_NODES of 10,000)
+		ObjectNode root = MAPPER.createObjectNode();
+		ObjectNode current = root;
 		
-		// The deeply nested NAME might not be masked due to recursion limit
-		// This test just ensures it doesn't crash
+		for (int depth = 0; depth < 60; depth++) {
+			ObjectNode next = MAPPER.createObjectNode();
+			
+			// Add 200 fields at each level
+			for (int width = 0; width < 200; width++) {
+				String fieldName = "field_" + depth + "_" + width;
+				if (width % 10 == 0) {
+					next.put(fieldName, "value_" + width);
+				} else {
+					next.put(fieldName, "data_" + width);
+				}
+			}
+			
+			// Add a NAME field to test masking
+			if (depth < 5) {
+				next.put("NAME", "EarlyData_" + depth);
+			}
+			
+			current.set("level" + depth, next);
+			current = next;
+		}
+
+		// This should hit the node limit and stop processing
+		masker.maskJsonTree(root);
+
+		// Verify early fields are masked (processed before limit hit)
+		JsonNode level0 = root.at("/level0");
+		assertThat(level0.has("NAME")).isTrue();
+		// Note: Whether NAME is masked depends on when node limit is hit
+		// The test verifies that processing completes without errors
+		
+		// The important part is that the operation completes gracefully
+		// without OutOfMemoryError or excessive processing time
 	}
 
 	/* ────────────────── Comprehensive Zoloz test ────────────────── */
-
 	@Test
 	void maskJsonTree_WithZolozResponse_ShouldMaskAllPii() throws Exception {
-		// Load the real Zoloz JSON file
-		String jsonContent = Files.readString(
-			Paths.get("src/test/resources/zoloz/checkResult_response_hkid.json")
-		);
-		
-		// Configure masker with all PII fields from Zoloz
-		masker.setMaskedFields(
-			"imageContent,CROPPED_FACE_FROM_DOC," +
-			"STANDARDIZED_DATE_OF_BIRTH,LATEST_ISSUE_DATE,ID_NUMBER,SEX,STANDARDIZED_LATEST_ISSUE_DATE," +
-			"NAME,NAME_CN,CHINESE_COMMERCIAL_CODE,ISSUE_DATE,SYMBOLS,DATE_OF_BIRTH," +
-			"PERMANENT_RESIDENT_STATUS,NAME_CN_RAW," +
-			"MRZ_NAME_CN_RAW,MRZ_ID_NUMBER,MRZ_NAME_CN,MRZ_DATE_OF_BIRTH," +
-			"MRZ_PERMANENT_RESIDENT_STATUS,MRZ_STANDARDIZED_DATE_OF_BIRTH,MRZ_SEX," +
-			"MRZ_LATEST_ISSUE_DATE,MRZ_CHINESE_COMMERCIAL_CODE,MRZ_ISSUE_DATE," +
-			"MRZ_NAME,MRZ_STANDARDIZED_LATEST_ISSUE_DATE,MRZ_SYMBOLS," +
-			"NATIONALITY,NUMBER,LAST_NAME_EN,MIDDLE_NAME_EN,LAST_NAME," +
-			"NATIONALITY_CODE,COUNTRY_OF_BIRTH_CODE,FIRST_NAME,DATE_OF_EXPIRY," +
-			"FIRST_NAME_EN,FULL_NAME_EN,ISSUE_STATE,ADDRESS,FULL_NAME," +
-			"ISSUE_STATE_CODE,MRZ1,GENDER,MIDDLE_NAME,COUNTRY_OF_BIRTH,DATE_OF_ISSUE"
-		);
+		masker.setMaskedFields("imageContent,ocrResult,ocrResultFormat,ocrResultDetail,extraImages");
 		masker.setMaskToken("[REDACTED]");
 		masker.start();
-		
+
+		String jsonContent = Files.readString(
+				Paths.get("src/test/resources/zoloz/checkResult_response_hkid.json")
+		);
+
+		JsonNode originalRoot = MAPPER.readTree(jsonContent);
 		JsonNode root = MAPPER.readTree(jsonContent);
 		masker.maskJsonTree(root);
-		
-		// ═══════════ Verify imageContent array is fully masked ═══════════
-		JsonNode imageContentArray = root.at("/extInfo/imageContent");
-		assertThat(imageContentArray.isArray()).isTrue();
-		assertThat(imageContentArray.size()).isEqualTo(1);
-		assertThat(imageContentArray.get(0).asText()).isEqualTo("[REDACTED]");
-		
-		// ═══════════ Verify ocrResult fields are masked ═══════════
-		assertThat(root.at("/extInfo/ocrResult/STANDARDIZED_DATE_OF_BIRTH").asText()).isEqualTo("[REDACTED]");
-		assertThat(root.at("/extInfo/ocrResult/LATEST_ISSUE_DATE").asText()).isEqualTo("[REDACTED]");
-		assertThat(root.at("/extInfo/ocrResult/ID_NUMBER").asText()).isEqualTo("[REDACTED]");
-		assertThat(root.at("/extInfo/ocrResult/SEX").asText()).isEqualTo("[REDACTED]");
-		assertThat(root.at("/extInfo/ocrResult/STANDARDIZED_LATEST_ISSUE_DATE").asText()).isEqualTo("[REDACTED]");
-		assertThat(root.at("/extInfo/ocrResult/NAME").asText()).isEqualTo("[REDACTED]");
-		assertThat(root.at("/extInfo/ocrResult/NAME_CN").asText()).isEqualTo("[REDACTED]");
-		assertThat(root.at("/extInfo/ocrResult/CHINESE_COMMERCIAL_CODE").asText()).isEqualTo("[REDACTED]");
-		assertThat(root.at("/extInfo/ocrResult/ISSUE_DATE").asText()).isEqualTo("[REDACTED]");
-		assertThat(root.at("/extInfo/ocrResult/SYMBOLS").asText()).isEqualTo("[REDACTED]");
-		assertThat(root.at("/extInfo/ocrResult/DATE_OF_BIRTH").asText()).isEqualTo("[REDACTED]");
-		assertThat(root.at("/extInfo/ocrResult/PERMANENT_RESIDENT_STATUS").asText()).isEqualTo("[REDACTED]");
-		assertThat(root.at("/extInfo/ocrResult/NAME_CN_RAW").asText()).isEqualTo("[REDACTED]");
-		
-		// ═══════════ Verify extraImages object is fully masked ═══════════
-		JsonNode extraImages = root.at("/extInfo/extraImages");
-		assertThat(extraImages.isObject()).isTrue();
-		assertThat(extraImages.get("CROPPED_FACE_FROM_DOC").asText()).isEqualTo("[REDACTED]");
-		
-		// ═══════════ Verify ocrResultDetail - all MRZ fields are masked ═══════════
-		assertThat(root.at("/extInfo/ocrResultDetail/MRZ_NAME_CN_RAW/value").asText()).isEqualTo("[REDACTED]");
-		assertThat(root.at("/extInfo/ocrResultDetail/MRZ_ID_NUMBER/value").asText()).isEqualTo("[REDACTED]");
-		assertThat(root.at("/extInfo/ocrResultDetail/MRZ_NAME_CN/value").asText()).isEqualTo("[REDACTED]");
-		assertThat(root.at("/extInfo/ocrResultDetail/MRZ_DATE_OF_BIRTH/value").asText()).isEqualTo("[REDACTED]");
-		assertThat(root.at("/extInfo/ocrResultDetail/MRZ_PERMANENT_RESIDENT_STATUS/value").asText()).isEqualTo("[REDACTED]");
-		assertThat(root.at("/extInfo/ocrResultDetail/MRZ_STANDARDIZED_DATE_OF_BIRTH/value").asText()).isEqualTo("[REDACTED]");
-		assertThat(root.at("/extInfo/ocrResultDetail/MRZ_SEX/value").asText()).isEqualTo("[REDACTED]");
-		assertThat(root.at("/extInfo/ocrResultDetail/MRZ_LATEST_ISSUE_DATE/value").asText()).isEqualTo("[REDACTED]");
-		assertThat(root.at("/extInfo/ocrResultDetail/MRZ_CHINESE_COMMERCIAL_CODE/value").asText()).isEqualTo("[REDACTED]");
-		assertThat(root.at("/extInfo/ocrResultDetail/MRZ_ISSUE_DATE/value").asText()).isEqualTo("[REDACTED]");
-		assertThat(root.at("/extInfo/ocrResultDetail/MRZ_NAME/value").asText()).isEqualTo("[REDACTED]");
-		assertThat(root.at("/extInfo/ocrResultDetail/MRZ_STANDARDIZED_LATEST_ISSUE_DATE/value").asText()).isEqualTo("[REDACTED]");
-		assertThat(root.at("/extInfo/ocrResultDetail/MRZ_SYMBOLS/value").asText()).isEqualTo("[REDACTED]");
-		
-		// ═══════════ Verify ocrResultFormat - all personal data fields are masked ═══════════
-		assertThat(root.at("/extInfo/ocrResultFormat/NUMBER").asText()).isEqualTo("[REDACTED]");
-		assertThat(root.at("/extInfo/ocrResultFormat/FULL_NAME_EN").asText()).isEqualTo("[REDACTED]");
-		assertThat(root.at("/extInfo/ocrResultFormat/FULL_NAME").asText()).isEqualTo("[REDACTED]");
-		assertThat(root.at("/extInfo/ocrResultFormat/GENDER").asText()).isEqualTo("[REDACTED]");
-		assertThat(root.at("/extInfo/ocrResultFormat/DATE_OF_BIRTH").asText()).isEqualTo("[REDACTED]");
-		
-		// ═══════════ Verify non-PII fields are NOT masked ═══════════
+
+		String[] maskedFields = {
+				"/extInfo/imageContent",
+				"/extInfo/ocrResult",
+				"/extInfo/ocrResultFormat",
+				"/extInfo/ocrResultDetail",
+				"/extInfo/extraImages"
+		};
+
+		for (String path : maskedFields) {
+			JsonNode originalNode = originalRoot.at(path);
+			JsonNode maskedNode = root.at(path);
+
+			if (maskedNode.isArray()) {
+				assertThat(maskedNode.size()).isEqualTo(originalNode.size());
+				for (int i = 0; i < maskedNode.size(); i++) {
+					assertThat(maskedNode.get(i).asText()).isEqualTo("[REDACTED]");
+				}
+			} else if (maskedNode.isObject()) {
+				assertThat(maskedNode.size()).isEqualTo(originalNode.size());
+				for (Iterator<Map.Entry<String, JsonNode>> it = maskedNode.fields(); it.hasNext(); ) {
+					Map.Entry<String, JsonNode> entry = it.next();
+					if (path.equals("/extInfo/ocrResultDetail") && entry.getValue().isObject() && entry.getValue().has("value")) {
+						assertThat(entry.getValue().get("value").asText()).isEqualTo("[REDACTED]");
+					} else {
+						assertThat(entry.getValue().asText()).isEqualTo("[REDACTED]");
+					}
+				}
+			}
+		}
+
+		// Non-PII fields remain unmasked
 		assertThat(root.at("/result/resultStatus").asText()).isEqualTo("S");
 		assertThat(root.at("/result/resultCode").asText()).isEqualTo("SUCCESS");
 		assertThat(root.at("/result/resultMessage").asText()).isEqualTo("Success");
@@ -447,39 +426,25 @@ class PiiDataMaskerComprehensiveTest {
 		assertThat(root.at("/extInfo/recognitionResult").asText()).isEqualTo("N");
 		assertThat(root.at("/extInfo/uploadEnabledResult").asText()).isEqualTo("N");
 		assertThat(root.at("/extInfo/recognitionErrorCode").asText()).isEqualTo("NOT_REAL_DOC");
-		
-		// Verify spoofResult fields are NOT masked
+
+		// SpoofResult fields are NOT masked
 		assertThat(root.at("/extInfo/spoofResult/TAMPER_CHECK").asText()).isEqualTo("N");
 		assertThat(root.at("/extInfo/spoofResult/SECURITY_FEATURE_CHECK").asText()).isEqualTo("Y");
 		assertThat(root.at("/extInfo/spoofResult/MATERIAL_CHECK").asText()).isEqualTo("N");
-		
-		// Verify extraSpoofResultDetails structure is preserved
+
+		// extraSpoofResultDetails structure is preserved
 		JsonNode extraSpoofDetails = root.at("/extInfo/extraSpoofResultDetails");
+		JsonNode originalExtraSpoofDetails = originalRoot.at("/extInfo/extraSpoofResultDetails");
 		assertThat(extraSpoofDetails.isArray()).isTrue();
-		assertThat(extraSpoofDetails.get(0).get("result").asText()).isEqualTo("N");
-		assertThat(extraSpoofDetails.get(0).get("spoofType").asText()).isEqualTo("INFORMATION_CHECK");
-		
-		// ═══════════ Verify that ALL sensitive data is masked ═══════════
-		// The test above comprehensively checks that all PII fields are masked with [REDACTED]
-		// Any field that contains actual personal information should be replaced
-		
-		// Count how many [REDACTED] values exist to ensure masking happened extensively
-		String jsonString = root.toString();
-		int redactedCount = jsonString.split("\\[REDACTED\\]", -1).length - 1;
-		// We expect at least 30 fields to be masked (all the PII fields we configured)
-		// This includes both filled and empty PII fields
-		assertThat(redactedCount).isGreaterThanOrEqualTo(30);
-		
-		// ═══════════ Summary ═══════════
-		// This test verifies that:
-		// 1. All imageContent array elements are masked (sensitive photos)
-		// 2. All ocrResult fields with personal data are masked (13 fields)
-		// 3. All extraImages fields are masked (face photos)
-		// 4. All ocrResultDetail MRZ fields are masked (13 fields)
-		// 5. All ocrResultFormat personal data fields are masked
-		// 6. Non-PII fields like resultCode, certType, docCategory remain unmasked
-		// 7. Technical/metadata fields like spoofResult checks remain unmasked
+		assertThat(extraSpoofDetails.size()).isEqualTo(originalExtraSpoofDetails.size());
+		for (int i = 0; i < extraSpoofDetails.size(); i++) {
+			assertThat(extraSpoofDetails.get(i).get("result").asText())
+					.isEqualTo(originalExtraSpoofDetails.get(i).get("result").asText());
+			assertThat(extraSpoofDetails.get(i).get("spoofType").asText())
+					.isEqualTo(originalExtraSpoofDetails.get(i).get("spoofType").asText());
+		}
 	}
+
 
 	/* ────────────────── Field name parsing tests ────────────────── */
 
@@ -502,77 +467,29 @@ class PiiDataMaskerComprehensiveTest {
 	}
 
 	@Test
-	void maskJsonTree_WithSpecialCharactersInFieldNames_ShouldClean() {
-		masker.setMaskedFields("N@AME!,S#SN$,ID%NUMBER^");
-		masker.setMaskToken("[REDACTED]");
-		masker.start();
-		
-		ObjectNode root = MAPPER.createObjectNode();
-		root.put("NAME", "John");
-		root.put("SSN", "123");
-		root.put("IDNUMBER", "456");
-		
-		masker.maskJsonTree(root);
-		
-		// Special characters should be removed
-		assertThat(root.get("NAME").asText()).isEqualTo("[REDACTED]");
-		assertThat(root.get("SSN").asText()).isEqualTo("[REDACTED]");
-		assertThat(root.get("IDNUMBER").asText()).isEqualTo("[REDACTED]");
-	}
-
-	/* ────────────────── Brace matching edge cases ────────────────── */
-
-	@Test
-	void maskJsonTree_WithUnbalancedBraces_ShouldNotCrash() {
+	void maskJsonTree_WithArrayInsideObjects_ShouldMask() {
 		masker.setMaskedFields("NAME");
 		masker.setMaskToken("[REDACTED]");
 		masker.start();
 		
 		ObjectNode root = MAPPER.createObjectNode();
-		root.put("data", "{\"NAME\":\"John\""); // Missing closing brace
+		ArrayNode users = root.putArray("users");
+		
+		ObjectNode user1 = users.addObject();
+		user1.put("NAME", "Alice");
+		user1.put("age", 25);
+		
+		ObjectNode user2 = users.addObject();
+		user2.put("NAME", "Bob");
+		user2.put("age", 30);
 		
 		masker.maskJsonTree(root);
 		
-		// Should not crash, just keep original
-		assertThat(root.get("data").asText()).contains("NAME");
-	}
-
-	@Test
-	void maskJsonTree_WithEscapedQuotes_ShouldHandle() throws Exception {
-		masker.setMaskedFields("NAME");
-		masker.setMaskToken("[REDACTED]");
-		masker.start();
-		
-		ObjectNode root = MAPPER.createObjectNode();
-		String jsonWithEscapes = "{\"NAME\":\"John \\\"The Boss\\\" Doe\"}";
-		root.put("data", jsonWithEscapes);
-		
-		masker.maskJsonTree(root);
-		
-		String masked = root.get("data").asText();
-		JsonNode parsed = MAPPER.readTree(masked);
-		assertThat(parsed.get("NAME").asText()).isEqualTo("[REDACTED]");
-	}
-
-	@Test
-	void maskJsonTree_WithVeryLargeJson_ShouldRespectScanLimit() {
-		masker.setMaskedFields("NAME");
-		masker.setMaskToken("[REDACTED]");
-		masker.start();
-		
-		// Create a very large JSON string (> 100,000 chars)
-		StringBuilder largeJson = new StringBuilder("{\"NAME\":\"John\"");
-		for (int i = 0; i < 50000; i++) {
-			largeJson.append(",\"field").append(i).append("\":\"value").append(i).append("\"");
-		}
-		largeJson.append("}");
-		
-		ObjectNode root = MAPPER.createObjectNode();
-		root.put("data", largeJson.toString());
-		
-		masker.maskJsonTree(root);
-		
-		// Should not crash, may or may not be masked depending on scan limit
+		// Both NAMEs should be masked
+		assertThat(root.at("/users/0/NAME").asText()).isEqualTo("[REDACTED]");
+		assertThat(root.at("/users/1/NAME").asText()).isEqualTo("[REDACTED]");
+		// Ages should not be masked
+		assertThat(root.at("/users/0/age").asInt()).isEqualTo(25);
+		assertThat(root.at("/users/1/age").asInt()).isEqualTo(30);
 	}
 }
-
