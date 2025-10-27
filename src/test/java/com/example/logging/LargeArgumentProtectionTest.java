@@ -41,6 +41,8 @@ class LargeArgumentProtectionTest {
         layout = new JsonStructuredLayout();
         layout.setMaskingLayout(masker);
         layout.setPrettyPrint(false);
+        // Keep historical 500KB limit for this test suite
+        layout.setMaxArgSizeBytes(MAX_SIZE);
         layout.start();
     }
 
@@ -281,5 +283,8 @@ class LargeArgumentProtectionTest {
         }
     }
 }
+
+
+
 
 

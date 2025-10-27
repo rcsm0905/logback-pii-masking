@@ -75,45 +75,21 @@ import org.slf4j.helpers.MessageFormatter;
  *          "message":"User {\"name\":\"John\",\"ssn\":\"[REDACTED]\"} logged in"}
  * </pre>
  *
- * <h2>MDC (Mapped Diagnostic Context) Handling</h2>
- * <b>IMPORTANT:</b> MDC values are NOT masked. By policy, MDC should only contain:
- * <ul>
- *   <li>✅ Correlation IDs (traceId, requestId, sessionId)</li>
- *   <li>✅ User identifiers (userId, username - non-PII)</li>
- *   <li>✅ Technical context (environment, service name)</li>
- *   <li>❌ NEVER put PII in MDC (SSN, credit cards, passwords, emails)</li>
- * </ul>
- * 
- * <b>Rationale:</b> MDC is for request correlation across microservices, not for sensitive data.
- * All PII should be in log arguments where it can be properly masked.
- *
+ * <b>IMPORTANT:</b> MDC values are NOT masked. All PII should be in log arguments where it can be properly masked.
  * <h2>What Gets Masked</h2>
  * <ul>
  *   <li><b>Log arguments</b>: DTOs, POJOs, JSON strings → converted to JSON → fields masked</li>
- *   <li><b>Simple types</b>: Primitives, Numbers, Strings → passed through unchanged</li>
- *   <li><b>MDC values</b>: NOT masked (should never contain PII)</li>
  * </ul>
  *
  * <h2>Safety & Error Handling</h2>
  * <ul>
  *   <li>{@link #formatFallback(ILoggingEvent, Exception)} - If ANY error occurs, output safe
- *       fallback log without PII (prevents PII leaks on error paths)</li>
+ *       fallback log without PII (prevents PII leaks on error paths)
+ *       → "%s [%s] %s - [LAYOUT ERROR] %s: %s%n"</li>
  *   <li>{@link #isSimpleType(Object)} - Optimization: skip JSON conversion for primitives</li>
  *   <li>Serialization failures → "[REDACTED DUE TO SERIALIZATION FAILURE]"</li>
- *   <li>No size limits on arguments (relies on JVM memory constraints)</li>
+ *   <li>Per-argument size limit (default 1MB, configurable via {@code maxArgSizeBytes})</li>
  * </ul>
- *
- * <h2>Thread Safety</h2>
- * Fully thread-safe:
- * <ul>
- *   <li>Uses immutable static {@link ObjectMapper} instances (COMPACT_MAPPER, PRETTY_MAPPER)</li>
- *   <li>No shared mutable state between calls</li>
- *   <li>PiiDataMasker uses ThreadLocal for recursion tracking</li>
- * </ul>
- *
- * <h2>Performance</h2>
- * Typical masking overhead: <b>0.1 - 1 millisecond</b> per log statement
- * (measured with {@code MaskingPerformanceTest}). Acceptable for most applications.
  */
 
 @Setter
@@ -131,21 +107,22 @@ public class JsonStructuredLayout extends LayoutBase<ILoggingEvent> {
       .configure(SerializationFeature.INDENT_OUTPUT, true);
 
   /**
-   * Maximum argument size in bytes (500KB).
+   * Maximum per-argument size in bytes. Default: 1MB.
    * <p>
-   * This is the first line of defense against excessively large log arguments
-   * that could impact application performance or cause OutOfMemoryError.
-   * Arguments exceeding this size are redacted without processing.
+   * This caps the size of each individual argument inserted into the message template.
+   * If an argument's serialized size exceeds this limit, the argument is replaced
+   * with a redaction token indicating it was too large. This protects log throughput
+   * and memory while still allowing large, legitimate arguments (e.g., base64 images).
    * <p>
-   * Rationale:
-   * <ul>
-   *   <li>Typical log arguments: 1KB - 100KB</li>
-   *   <li>Large API responses: 100KB - 500KB</li>
-   *   <li>Excessive/malicious: 1MB+</li>
-   * </ul>
-   * Value of 500KB allows legitimate large payloads while blocking attacks.
+   * Can be configured in logback-spring.xml via:
+   * <pre>
+   *   <layout class="com.example.logging.JsonStructuredLayout">
+   *     <maxArgSizeBytes>1048576</maxArgSizeBytes>
+   *     ...
+   *   </layout>
+   * </pre>
    */
-  private static final int MAX_ARG_SIZE_BYTES = 500 * 1024; // 500KB
+  private int maxArgSizeBytes = 1024 * 1024; // 1MB default
 
   // Nested PII masking component
   private PiiDataMasker maskingLayout;
@@ -171,14 +148,6 @@ public class JsonStructuredLayout extends LayoutBase<ILoggingEvent> {
    *   <li><b>Serialize</b>: Convert to JSON string (compact or pretty)</li>
    * </ol>
    *
-   * <h3>Important Notes:</h3>
-   * <ul>
-   *   <li><b>MDC is NOT masked</b>: MDC values are added as-is. Never put PII in MDC!</li>
-   *   <li><b>Only arguments are masked</b>: DTOs and JSON strings in log arguments are masked</li>
-   *   <li><b>Simple types pass through</b>: Primitives, numbers, booleans are not processed</li>
-   *   <li><b>Error safety</b>: Any exception triggers {@link #formatFallback} to prevent PII leaks</li>
-   * </ul>
-   *
    * @param ev the log event from Logback
    * @return JSON string with newline, safe for writing to log files
    */
@@ -191,15 +160,14 @@ public class JsonStructuredLayout extends LayoutBase<ILoggingEvent> {
       root.put("timestamp", getFormattedCurrentTimestamp(ev.getTimeStamp()));
       root.put("level", ev.getLevel().toString());
       root.put("logger", ev.getLoggerName());
-      // MDC context (NOT masked - by policy, PII should never be in MDC)
+      // MDC context
       Map<String, String> mdc = ev.getMDCPropertyMap();
       if (mdc != null && !mdc.isEmpty()) {
         mdc.forEach(root::put);
       }
       /* 2 ─ Mask PII in log arguments */
       Object[] maskedArgs = maskArgumentArray(ev.getArgumentArray());
-      String formattedMsg = formatMessage(maskedArgs,
-          ev.getMessage()); // replace the maskedArgs into the placeholders
+      String formattedMsg = formatMessage(maskedArgs, ev.getMessage()); // replace the maskedArgs into the placeholders
       root.set("message", TextNode.valueOf(formattedMsg));
       if (ev.getThrowableProxy() != null) {
         root.set("exception", TextNode.valueOf(formatException(ev)));
@@ -245,7 +213,7 @@ public class JsonStructuredLayout extends LayoutBase<ILoggingEvent> {
    * Mask all arguments in the log message argument array.
    * <p>
    * Creates a new array and processes each argument through {@link #maskArgument}.
-   * This ensures PII in DTOs, JSON strings, and complex objects is redacted
+   * This ensures PII in DTOs, JSON strings, and complex objects are redacted
    * before the message is formatted.
    * 
    * @param args the original argument array from the log event
@@ -270,7 +238,7 @@ public class JsonStructuredLayout extends LayoutBase<ILoggingEvent> {
    * <ol>
    *   <li>If {@code null} or a simple type (primitive, Number, Boolean, enum, LocalDate, etc.),
    *       return as-is without processing</li>
-   *   <li><b>SIZE CHECK:</b> If argument exceeds {@link #MAX_ARG_SIZE_BYTES}, redact immediately</li>
+   *   <li><b>SIZE CHECK:</b> If argument exceeds {@code maxArgSizeBytes}, redact immediately</li>
    *   <li>If a String, attempt to parse as JSON; if successful, mask the JSON tree</li>
    *   <li>If a DTO/POJO, convert to JSON tree and mask it</li>
    *   <li>If serialization fails, return a safe redaction message</li>
@@ -279,10 +247,6 @@ public class JsonStructuredLayout extends LayoutBase<ILoggingEvent> {
    * <b>Defense-in-Depth:</b> Size check happens BEFORE JSON parsing/masking to protect
    * the application from excessive memory consumption. This complements the depth/node
    * limits in {@link PiiDataMasker}.
-   * <p>
-   * <b>Thread Safety:</b> Uses static {@link #COMPACT_MAPPER} which is thread-safe
-   * for read operations. The masking itself delegates to {@link PiiDataMasker#maskJsonTree}
-   * which handles concurrent access via thread-local recursion tracking.
    * 
    * @param arg the log argument to mask
    * @return the masked argument (as JSON string for complex types), or original for simple types
@@ -291,50 +255,41 @@ public class JsonStructuredLayout extends LayoutBase<ILoggingEvent> {
     if (arg == null) {
       return null;
     }
-
-    // Handle primitives and simple types directly
+		// Pass through simple types without masking
     if (isSimpleType(arg)) {
       return arg;
     }
 
-    // Handle DTOs and complex objects
+    JsonNode jsonNode;
+    int sizeBytes;
     try {
-      JsonNode jsonNode;
-      String jsonString;
-
       if (arg instanceof String string) {
-        // Defense: Check string size before parsing
-        int sizeBytes = string.getBytes().length;
-        if (sizeBytes > MAX_ARG_SIZE_BYTES) {
+        // For strings, size is the original string bytes
+        sizeBytes = string.getBytes().length;
+        if (sizeBytes > maxArgSizeBytes) {
           addWarn(String.format("Argument size (%d bytes) exceeds limit (%d bytes) - redacting to prevent performance impact",
-              sizeBytes, MAX_ARG_SIZE_BYTES));
+              sizeBytes, maxArgSizeBytes));
           return "[REDACTED DUE TO ARG TOO LARGE: " + formatSize(sizeBytes) + "]";
         }
-        
-        // Try parsing string as JSON
         jsonNode = COMPACT_MAPPER.readTree(string);
-        jsonString = string;
       } else {
-        // Convert DTO/object to JSON tree first
+        // For objects, serialize to JSON tree and measure its JSON size
         jsonNode = COMPACT_MAPPER.valueToTree(arg);
-        jsonString = jsonNode.toString();
-        
-        // Defense: Check serialized size before masking
-        int sizeBytes = jsonString.getBytes().length;
-        if (sizeBytes > MAX_ARG_SIZE_BYTES) {
+        sizeBytes = jsonNode.toString().getBytes().length;
+        if (sizeBytes > maxArgSizeBytes) {
           addWarn(String.format("Serialized argument size (%d bytes) exceeds limit (%d bytes) - redacting to prevent performance impact",
-              sizeBytes, MAX_ARG_SIZE_BYTES));
+              sizeBytes, maxArgSizeBytes));
           return "[REDACTED DUE TO ARG TOO LARGE: " + formatSize(sizeBytes) + "]";
         }
       }
-      
-      // Proceed with masking
-      maskingLayout.maskJsonTree(jsonNode);
-      return jsonNode.toString();
     } catch (Exception e) {
-      // Fallback for objects that can't be serialized
+      // Fallback for objects/strings that can't be parsed/serialized
       return "[REDACTED DUE TO SERIALIZATION FAILURE: " + e.getMessage() + "]";
     }
+
+    // Mask PII and return compact JSON string
+    maskingLayout.maskJsonTree(jsonNode);
+    return jsonNode.toString();
   }
 
   /**
@@ -348,11 +303,11 @@ public class JsonStructuredLayout extends LayoutBase<ILoggingEvent> {
   private String formatSize(int bytes) {
     if (bytes < 1024) {
       return bytes + "B";
-    } else if (bytes < 1024 * 1024) {
-      return String.format("%.1fKB", bytes / 1024.0);
-    } else {
-      return String.format("%.1fMB", bytes / (1024.0 * 1024));
     }
+		if (bytes < 1024 * 1024) {
+      return String.format("%.1fKB", bytes / 1024.0);
+    }
+		return String.format("%.1fMB", bytes / (1024.0 * 1024));
   }
 
   /**
