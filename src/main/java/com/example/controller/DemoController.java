@@ -31,7 +31,6 @@ public class DemoController {
         log.info("API endpoint called: /api/demo/zoloz/check-result");
 
         ZolozCheckResultResponse response = demoService.processZolozCheckResultResponse(req);
-
         return ResponseEntity.ok(response);
     }
     // ==================== Environment Variable Configuration ====================

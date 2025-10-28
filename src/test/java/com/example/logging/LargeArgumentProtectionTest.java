@@ -26,7 +26,7 @@ class LargeArgumentProtectionTest {
     private JsonStructuredLayout layout;
     private LoggerContext loggerContext;
     
-    // MAX_ARG_SIZE_BYTES from JsonStructuredLayout = 500KB
+    // Threshold for "large" test arguments (still well under Jackson's 10MB limit)
     private static final int MAX_SIZE = 500 * 1024;
 
     @BeforeEach
@@ -41,8 +41,6 @@ class LargeArgumentProtectionTest {
         layout = new JsonStructuredLayout();
         layout.setMaskingLayout(masker);
         layout.setPrettyPrint(false);
-        // Keep historical 500KB limit for this test suite
-        layout.setMaxArgSizeBytes(MAX_SIZE);
         layout.start();
     }
 
@@ -109,8 +107,8 @@ class LargeArgumentProtectionTest {
     }
 
     @Test
-    void testLargeArgument_ShouldBeRedacted() throws Exception {
-        // Argument ~600KB (exceeds 500KB limit)
+    void testLargeArgument_ShouldProcessNormally() throws Exception {
+        // Argument ~600KB (well under Jackson's 10MB limit)
         StringBuilder sb = new StringBuilder("{\"data\":[");
         for (int i = 0; i < 6000; i++) {
             if (i > 0) sb.append(",");
@@ -129,22 +127,18 @@ class LargeArgumentProtectionTest {
         JsonNode outputJson = MAPPER.readTree(output);
         String message = outputJson.get("message").asText();
         
-        // Verify size limit protection triggered
-        assertThat(message).contains("REDACTED DUE TO ARG TOO LARGE");
-        assertThat(message).matches(".*\\d+\\.\\d+KB.*|.*\\d+\\.\\d+MB.*"); // Contains formatted size
+        // Verify normal processing (no early size limit - Jackson handles it)
+        assertThat(message).doesNotContain("REDACTED DUE TO ARG TOO LARGE");
+        // Large arguments under 10MB are processed normally via Jackson limits
+        assertThat(message).contains("\"id\":"); // Data was processed
         
-        // Verify original data was NOT processed
-        assertThat(message).doesNotContain("\"id\":");
-        assertThat(message).doesNotContain("\"value\":");
-        
-        System.out.println("\n✅ Large argument protection test:");
+        System.out.println("\n✅ Large argument test (under 10MB, processes normally):");
         System.out.println("   Argument size: " + formatSize(actualSize));
-        System.out.println("   Result: " + message);
     }
 
     @Test
-    void testVeryLargeArgument_ShouldBeRedacted() throws Exception {
-        // Argument ~2MB (way over limit)
+    void testVeryLargeArgument_ShouldProcessNormally() throws Exception {
+        // Argument ~2MB (still under Jackson's 10MB limit)
         String veryLargeString = "x".repeat(2 * 1024 * 1024); // 2MB of 'x'
         
         int actualSize = veryLargeString.getBytes().length;
@@ -157,21 +151,20 @@ class LargeArgumentProtectionTest {
         JsonNode outputJson = MAPPER.readTree(output);
         String message = outputJson.get("message").asText();
         
-        // Verify size limit protection triggered
-        assertThat(message).contains("REDACTED DUE TO ARG TOO LARGE");
-        assertThat(message).contains("MB"); // Size in MB
+        // Verify normal processing (under 10MB, processes via Jackson limits)
+        assertThat(message).doesNotContain("REDACTED DUE TO ARG TOO LARGE");
+        // Note: Non-JSON strings pass through unchanged, so "x" will be in output
         
-        System.out.println("\n✅ Very large argument protection test:");
+        System.out.println("\n✅ Very large argument test (2MB, under 10MB limit):");
         System.out.println("   Argument size: " + formatSize(actualSize));
-        System.out.println("   Result: " + message);
     }
 
     @Test
-    void testLargeDtoObject_ShouldBeRedacted() throws Exception {
-        // Create a large DTO (when serialized, exceeds 500KB)
+    void testLargeDtoObject_ShouldProcessNormally() throws Exception {
+        // Create a large DTO (when serialized, still under 10MB Jackson limit)
         LargeTestDto largeDto = new LargeTestDto();
         
-        // Add 10,000 items to make it large
+        // Add 10,000 items to make it large (but still processable)
         for (int i = 0; i < 10000; i++) {
             largeDto.addItem(new LargeTestDto.Item(i, "value_" + i, "description_" + i));
         }
@@ -183,20 +176,21 @@ class LargeArgumentProtectionTest {
         JsonNode outputJson = MAPPER.readTree(output);
         String message = outputJson.get("message").asText();
         
-        // Verify size limit protection triggered
-        assertThat(message).contains("REDACTED DUE TO ARG TOO LARGE");
+        // Verify normal processing (under 10MB, Jackson handles it)
+        assertThat(message).doesNotContain("REDACTED DUE TO ARG TOO LARGE");
+        // DTO was serialized and processed normally
         
-        System.out.println("\n✅ Large DTO protection test:");
-        System.out.println("   Result: " + message);
+        System.out.println("\n✅ Large DTO test (processed normally):");
+        System.out.println("   Result: " + message.substring(0, Math.min(200, message.length())) + "...");
     }
 
     @Test
-    void testMultipleArguments_OnlyLargeOnesRedacted() throws Exception {
-        // Mix of small and large arguments
+    void testMultipleArguments_BothProcessNormally() throws Exception {
+        // Mix of small and large arguments (both under 10MB limit)
         String smallJson = "{\"name\":\"John\"}";
-        String largeJson = "x".repeat(600 * 1024); // 600KB
+        String largeString = "x".repeat(600 * 1024); // 600KB
         
-        LoggingEvent event = createLoggingEvent("Data: {} and {}", new Object[]{smallJson, largeJson});
+        LoggingEvent event = createLoggingEvent("Data: {} and {}", new Object[]{smallJson, largeString});
         String output = layout.doLayout(event);
         
         // Parse output
@@ -206,16 +200,17 @@ class LargeArgumentProtectionTest {
         // Verify small argument processed normally
         assertThat(message).contains("John");
         
-        // Verify large argument redacted
-        assertThat(message).contains("REDACTED DUE TO ARG TOO LARGE");
+        // Verify large argument also processed (under 10MB, no early rejection)
+        assertThat(message).doesNotContain("REDACTED DUE TO ARG TOO LARGE");
+        // Large non-JSON string passes through unchanged
         
-        System.out.println("\n✅ Mixed arguments test:");
-        System.out.println("   Message: " + message);
+        System.out.println("\n✅ Mixed arguments test (both process normally):");
+        System.out.println("   Message: " + message.substring(0, Math.min(200, message.length())) + "...");
     }
 
     @Test
-    void testPerformance_SizeCheckIsFast() {
-        // Verify size check doesn't add significant overhead
+    void testPerformance_LayoutIsFast() {
+        // Verify layout processing doesn't add significant overhead
         String normalJson = "{\"name\":\"John\",\"ssn\":\"123-45-6789\"}";
         LoggingEvent event = createLoggingEvent("User: {}", new Object[]{normalJson});
         

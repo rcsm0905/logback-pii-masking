@@ -4,37 +4,39 @@
   <springProperty scope="context" name="logMaskFields" source="LOG_MASK_FIELDS"
     defaultValue="imageContent,ocrResult,ocrResultFormat,ocrResultDetail,CROPPED_FACE_FROM_DOC"/>
 
-  <!-- Local: Pretty-printed JSON for readability -->
+  <!--
+    Optional Configuration Parameters (can be added to layout/maskingLayout below):
+    
+    JsonStructuredLayout:
+      - maxNestingDepth: Maximum JSON nesting depth (default: 50)
+      - maxStringLength: Maximum string length in bytes (default: 10000000 = 10MB)
+      - maxDocumentLength: Maximum document size in bytes (default: 10000000 = 10MB)
+    
+    PiiDataMasker:
+      - maxJsonDepth: Maximum depth to traverse (default: 50)
+      - maxNodes: Maximum number of nodes to process (default: 10000)
+  -->
+
+  <!-- Set prettyPrint property based on profile -->
   <springProfile name="local">
-    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
-      <encoder class="ch.qos.logback.core.encoder.LayoutWrappingEncoder">
-        <layout class="com.example.logging.JsonStructuredLayout">
-          <prettyPrint>true</prettyPrint>
-          <maskingLayout class="com.example.logging.PiiDataMasker">
-            <maskedFields>${logMaskFields}</maskedFields>   <!-- mandatory -->
-            <maskToken>[REDACTED]</maskToken>   <!-- mandatory -->
-            <maxMessageSize>1048576</maxMessageSize>   <!-- mandatory -->
-          </maskingLayout>
-        </layout>
-      </encoder>
-    </appender>
+    <property name="prettyPrint" value="true"/>
+  </springProfile>
+  <springProfile name="!local">
+    <property name="prettyPrint" value="false"/>
   </springProfile>
 
-  <!-- Default: Compact JSON for CloudWatch/Lambda -->
-  <springProfile name="!local">
-    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
-      <encoder class="ch.qos.logback.core.encoder.LayoutWrappingEncoder">
-        <layout class="com.example.logging.JsonStructuredLayout">
-          <prettyPrint>false</prettyPrint>
-          <maskingLayout class="com.example.logging.PiiDataMasker">
-            <maskedFields>${logMaskFields}</maskedFields>   <!-- mandatory -->
-            <maskToken>[REDACTED]</maskToken>   <!-- mandatory -->
-            <maxMessageSize>1048576</maxMessageSize>   <!-- mandatory -->
-          </maskingLayout>
-        </layout>
-      </encoder>
-    </appender>
-  </springProfile>
+  <!-- Console appender with JSON layout and PII masking -->
+  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder class="ch.qos.logback.core.encoder.LayoutWrappingEncoder">
+      <layout class="com.example.logging.JsonStructuredLayout">
+        <prettyPrint>${prettyPrint}</prettyPrint>
+        <maskingLayout class="com.example.logging.PiiDataMasker">
+          <maskedFields>${logMaskFields}</maskedFields>
+          <maskToken>[REDACTED]</maskToken>
+        </maskingLayout>
+      </layout>
+    </encoder>
+  </appender>
 
   <root level="INFO">
     <appender-ref ref="CONSOLE"/>

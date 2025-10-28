@@ -58,8 +58,10 @@ import lombok.Setter;
  * </pre>
  *
  * <ul>
- *   <li><b>maskedFields</b>: Comma-separated list of JSON field names to mask</li>
- *   <li><b>maskToken</b>: Replacement text (e.g. "[REDACTED]", "***")</li>
+ *   <li><b>maskedFields</b>: Comma-separated list of JSON field names to mask (mandatory)</li>
+ *   <li><b>maskToken</b>: Replacement text (e.g. "[REDACTED]", "***") (mandatory)</li>
+ *   <li><b>maxJsonDepth</b>: Maximum JSON depth to traverse (default: 50, optional)</li>
+ *   <li><b>maxNodes</b>: Maximum number of nodes to process (default: 10000, optional)</li>
  * </ul>
  *
  * <h3>What gets masked</h3>
@@ -128,8 +130,16 @@ public class PiiDataMasker extends ContextAwareBase implements LifeCycle {
 	 * This limit prevents processing of maliciously crafted deeply nested JSON structures that could
 	 * cause performance degradation or resource exhaustion. Value of 50 covers 99.9% of real-world
 	 * API responses (typical depth: 5-15).
+	 * <p>
+	 * Configurable via logback-spring.xml:
+	 * <pre>
+	 *   &lt;maskingLayout class="com.example.logging.PiiDataMasker"&gt;
+	 *     &lt;maxJsonDepth&gt;50&lt;/maxJsonDepth&gt;
+	 *     ...
+	 *   &lt;/maskingLayout&gt;
+	 * </pre>
 	 */
-	private static final int MAX_JSON_DEPTH = 50;
+	private int maxJsonDepth = 50;
 
 	/**
 	 * Maximum number of nodes to process in a single masking operation.
@@ -137,8 +147,16 @@ public class PiiDataMasker extends ContextAwareBase implements LifeCycle {
 	 * This limit prevents processing of excessively wide JSON structures with thousands of fields,
 	 * which could cause CPU exhaustion. Value of 10,000 allows complex responses while blocking DoS
 	 * attacks.
+	 * <p>
+	 * Configurable via logback-spring.xml:
+	 * <pre>
+	 *   &lt;maskingLayout class="com.example.logging.PiiDataMasker"&gt;
+	 *     &lt;maxNodes&gt;10000&lt;/maxNodes&gt;
+	 *     ...
+	 *   &lt;/maskingLayout&gt;
+	 * </pre>
 	 */
-	private static final int MAX_NODES = 10_000;
+	private int maxNodes = 10_000;
 
 	/* ───────────── state ───────────── */
 
@@ -170,8 +188,7 @@ public class PiiDataMasker extends ContextAwareBase implements LifeCycle {
 			requireNonBlank(maskToken, CFG_MASK_TOKEN);
 			fieldNamesToMask = parseAndValidateFields(maskedFields);
 			started.set(true);
-			System.out.println(
-					"PII masker started – fields=" + fieldNamesToMask + ", token=" + maskToken);
+			addInfo("PII masker started – fields=" + fieldNamesToMask + ", token=" + maskToken);
 		} catch (Exception ex) {
 			throw new IllegalStateException("PII masking init failed", ex);
 		}
@@ -257,7 +274,7 @@ public class PiiDataMasker extends ContextAwareBase implements LifeCycle {
 	/**
 	 * Iteratively traverse and mask a JSON tree using an explicit stack.
 	 * <p>
-	 * Enforces {@link #MAX_JSON_DEPTH} and {@link #MAX_NODES} to bound work. No recursion is used,
+	 * Enforces {@link #maxJsonDepth} and {@link #maxNodes} to bound work. No recursion is used,
 	 * avoiding stack overflows on deep inputs.
 	 * <p>
 	 * <b>Algorithm:</b>
@@ -284,9 +301,9 @@ public class PiiDataMasker extends ContextAwareBase implements LifeCycle {
 		int nodesProcessed = 0;
 		while (!stack.isEmpty()) {
 			nodesProcessed++;
-			if (nodesProcessed > MAX_NODES) {
+			if (nodesProcessed > maxNodes) {
 				addWarn(
-						"Stopping masking after processing " + MAX_NODES + " nodes - possible malicious input");
+						"Stopping masking after processing " + maxNodes + " nodes - possible malicious input");
 				break;
 			}
 			NodeWithDepth item = stack.pop();
@@ -294,8 +311,8 @@ public class PiiDataMasker extends ContextAwareBase implements LifeCycle {
 			int depth = item.depth();
 
 			// Defense: Check depth limit
-			if (depth >= MAX_JSON_DEPTH) {
-				addWarn("Skipping nodes beyond depth " + MAX_JSON_DEPTH +
+			if (depth >= maxJsonDepth) {
+				addWarn("Skipping nodes beyond depth " + maxJsonDepth +
 						" (current depth: " + depth + ") - possible malicious input");
 			} else if (node.isObject()) {
 				ObjectNode obj = (ObjectNode) node;

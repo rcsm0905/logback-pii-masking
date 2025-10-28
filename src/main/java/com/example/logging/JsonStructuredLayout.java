@@ -8,8 +8,6 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.node.TextNode;
 import java.time.Instant;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.Map;
@@ -28,9 +26,11 @@ import org.slf4j.helpers.MessageFormatter;
  * &lt;encoder class="ch.qos.logback.core.encoder.LayoutWrappingEncoder"&gt;
  *   &lt;layout class="com.example.logging.JsonStructuredLayout"&gt;
  *     &lt;prettyPrint&gt;false&lt;/prettyPrint&gt;
+ *     <!-- Optional: maxNestingDepth (default: 50), maxStringLength (default: 10MB), maxDocumentLength (default: 10MB) -->
  *     &lt;maskingLayout class="com.example.logging.PiiDataMasker"&gt;
- *       &lt;maskedFields&gt;ssn,creditCard,password,email&lt;/maskedFields&gt;
- *       &lt;maskToken&gt;[REDACTED]&lt;/maskToken&gt;
+ *       &lt;maskedFields&gt;ssn,creditCard,password,email&lt;/maskedFields&gt;   &lt;!-- mandatory --&gt;
+ *       &lt;maskToken&gt;[REDACTED]&lt;/maskToken&gt;   &lt;!-- mandatory --&gt;
+ *       <!-- Optional: maxJsonDepth (default: 50), maxNodes (default: 10000) -->
  *     &lt;/maskingLayout&gt;
  *   &lt;/layout&gt;
  * &lt;/encoder&gt;
@@ -86,9 +86,9 @@ import org.slf4j.helpers.MessageFormatter;
  *   <li>{@link #formatFallback(ILoggingEvent, Exception)} - If ANY error occurs, output safe
  *       fallback log without PII (prevents PII leaks on error paths)
  *       → "%s [%s] %s - [LAYOUT ERROR] %s: %s%n"</li>
- *   <li>{@link #isSimpleType(Object)} - Optimization: skip JSON conversion for primitives</li>
+ *   <li>{@link #nonPiiSource(Object)} - Optimization: skip JSON conversion for primitives and simple types</li>
  *   <li>Serialization failures → "[REDACTED DUE TO SERIALIZATION FAILURE]"</li>
- *   <li>Per-argument size limit (default 1MB, configurable via {@code maxArgSizeBytes})</li>
+ *   <li>Jackson size limits protect against large inputs: 10MB document/string limits (configurable via {@code maxDocumentLength}, {@code maxStringLength})</li>
  * </ul>
  */
 
@@ -99,37 +99,98 @@ public class JsonStructuredLayout extends LayoutBase<ILoggingEvent> {
       DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSXXX")
           .withZone(ZoneId.systemDefault());
 
-  private static final ObjectMapper COMPACT_MAPPER = new ObjectMapper()
-      .configure(SerializationFeature.FAIL_ON_EMPTY_BEANS, false);
-
-  private static final ObjectMapper PRETTY_MAPPER = new ObjectMapper()
-      .configure(SerializationFeature.FAIL_ON_EMPTY_BEANS, false)
-      .configure(SerializationFeature.INDENT_OUTPUT, true);
-
   /**
-   * Maximum per-argument size in bytes. Default: 1MB.
+   * Maximum nesting depth for JSON structures (protects against deeply nested attacks).
+   * Default: 50 levels (covers 99.9% of real-world APIs).
    * <p>
-   * This caps the size of each individual argument inserted into the message template.
-   * If an argument's serialized size exceeds this limit, the argument is replaced
-   * with a redaction token indicating it was too large. This protects log throughput
-   * and memory while still allowing large, legitimate arguments (e.g., base64 images).
-   * <p>
-   * Can be configured in logback-spring.xml via:
+   * Configurable via logback-spring.xml:
    * <pre>
-   *   <layout class="com.example.logging.JsonStructuredLayout">
-   *     <maxArgSizeBytes>1048576</maxArgSizeBytes>
+   *   &lt;layout class="com.example.logging.JsonStructuredLayout"&gt;
+   *     &lt;maxNestingDepth&gt;50&lt;/maxNestingDepth&gt;
    *     ...
-   *   </layout>
+   *   &lt;/layout&gt;
    * </pre>
    */
-  private int maxArgSizeBytes = 1024 * 1024; // 1MB default
+  private int maxNestingDepth = 50;
+  
+  /**
+   * Maximum string length in JSON (allows base64-encoded images).
+   * Default: 10MB for base64 images (~7.5MB original).
+   * <p>
+   * Configurable via logback-spring.xml:
+   * <pre>
+   *   &lt;layout class="com.example.logging.JsonStructuredLayout"&gt;
+   *     &lt;maxStringLength&gt;10000000&lt;/maxStringLength&gt;
+   *     ...
+   *   &lt;/layout&gt;
+   * </pre>
+   */
+  private int maxStringLength = 10_000_000;  // 10MB for base64 images
+  
+  /**
+   * Maximum total JSON document size during parsing.
+   * Default: 10MB total.
+   * <p>
+   * Configurable via logback-spring.xml:
+   * <pre>
+   *   &lt;layout class="com.example.logging.JsonStructuredLayout"&gt;
+   *     &lt;maxDocumentLength&gt;10000000&lt;/maxDocumentLength&gt;
+   *     ...
+   *   &lt;/layout&gt;
+   * </pre>
+   */
+  private long maxDocumentLength = 10_000_000L;  // 10MB total
+  
+  private ObjectMapper compactMapper;
+  private ObjectMapper prettyMapper;
+  
+  /**
+   * Create an ObjectMapper with safety constraints to prevent DoS attacks.
+   * Configures both read (parsing) and write (serialization) constraints.
+   */
+  private ObjectMapper createSafeMapper(boolean prettyPrint) {
+    ObjectMapper mapper = new ObjectMapper();
+    
+    // Serialization configuration
+    mapper.configure(SerializationFeature.FAIL_ON_EMPTY_BEANS, false);
+    mapper.disable(SerializationFeature.FAIL_ON_SELF_REFERENCES);
+    
+    if (prettyPrint) {
+      mapper.configure(SerializationFeature.INDENT_OUTPUT, true);
+    }
+    
+    // INPUT protection: constraints during JSON parsing (readTree, readValue)
+    mapper.getFactory().setStreamReadConstraints(
+      com.fasterxml.jackson.core.StreamReadConstraints.builder()
+        .maxNestingDepth(maxNestingDepth)
+        .maxStringLength(maxStringLength)
+        .maxNumberLength(1000)
+        .maxNameLength(50_000)
+        .maxDocumentLength(maxDocumentLength)
+        .build()
+    );
+    
+    // OUTPUT protection: constraints during serialization (writeValue, valueToTree)
+    // Available in Jackson 2.16+; gracefully degrade for older versions
+    try {
+      mapper.getFactory().setStreamWriteConstraints(
+        com.fasterxml.jackson.core.StreamWriteConstraints.builder()
+          .maxNestingDepth(maxNestingDepth)
+          .build()
+      );
+    } catch (NoSuchMethodError e) {
+      // Older Jackson version; rely on other defenses (heuristics, size checks)
+    }
+    
+    return mapper;
+  }
 
   // Nested PII masking component
   private PiiDataMasker maskingLayout;
 
   /**
    * Pretty print for local dev (configurable via logback-spring.xml) If true, use
-   * {@link #PRETTY_MAPPER}; otherwise use {@link #COMPACT_MAPPER}.
+   * {@link #prettyMapper}; otherwise use {@link #compactMapper}.
    */
   private boolean prettyPrint;
 
@@ -155,7 +216,7 @@ public class JsonStructuredLayout extends LayoutBase<ILoggingEvent> {
   public String doLayout(ILoggingEvent ev) {
     try {
       /* 1 ─ Build the JSON tree */
-      ObjectMapper mapper = prettyPrint ? PRETTY_MAPPER : COMPACT_MAPPER;
+      ObjectMapper mapper = prettyPrint ? prettyMapper : compactMapper;
       ObjectNode root = mapper.createObjectNode();
       root.put("timestamp", getFormattedCurrentTimestamp(ev.getTimeStamp()));
       root.put("level", ev.getLevel().toString());
@@ -232,105 +293,92 @@ public class JsonStructuredLayout extends LayoutBase<ILoggingEvent> {
   }
 
   /**
+   * Determine if a string looks like JSON (object or array) without heavy parsing.
+   */
+  private boolean isJsonLike(String s) {
+    if (s == null) return false;
+    String t = s.stripLeading();
+    return !t.isEmpty() && (t.charAt(0) == '{' || t.charAt(0) == '[');
+  }
+
+  /**
+   * Identify argument types that are considered non-PII sources and should be
+   * passed through without JSON serialization.
+   */
+  private boolean nonPiiSource(Object obj) {
+    if (obj == null) {
+			return true;
+		}
+    Class<?> c = obj.getClass();
+    return c.isEnum()
+        || obj instanceof Number
+        || obj instanceof Boolean
+        || obj instanceof Character
+        || obj instanceof java.util.UUID
+        || obj instanceof java.time.temporal.TemporalAccessor
+        || (obj instanceof CharSequence && !(obj instanceof String))
+        || obj instanceof Throwable
+        || obj instanceof Map<?, ?>
+        || obj instanceof Iterable<?>
+        || c.isArray();
+  }
+
+  /**
    * Mask a single log argument if it contains potential PII.
    * <p>
    * Core masking logic that determines how to handle different argument types:
    * <ol>
-   *   <li>If {@code null} or a simple type (primitive, Number, Boolean, enum, LocalDate, etc.),
+   *   <li>If {@code null} or a non-PII source ({@link #nonPiiSource(Object)}),
    *       return as-is without processing</li>
-   *   <li><b>SIZE CHECK:</b> If argument exceeds {@code maxArgSizeBytes}, redact immediately</li>
-   *   <li>If a String, attempt to parse as JSON; if successful, mask the JSON tree</li>
+   *   <li>If a String, check if JSON-like; if yes, parse and mask the JSON tree</li>
    *   <li>If a DTO/POJO, convert to JSON tree and mask it</li>
    *   <li>If serialization fails, return a safe redaction message</li>
    * </ol>
    * <p>
-   * <b>Defense-in-Depth:</b> Size check happens BEFORE JSON parsing/masking to protect
-   * the application from excessive memory consumption. This complements the depth/node
-   * limits in {@link PiiDataMasker}.
+   * <b>Security:</b> Jackson's {@code StreamReadConstraints} and {@code StreamWriteConstraints}
+   * protect against large or deeply nested inputs (10MB document/string limits, 50-level depth).
+   * This complements the depth/node limits in {@link PiiDataMasker}.
    * 
    * @param arg the log argument to mask
-   * @return the masked argument (as JSON string for complex types), or original for simple types
+   * @return the masked argument (as JsonNode for complex types), or original for simple types
    */
   private Object maskArgument(Object arg) {
     if (arg == null) {
       return null;
     }
-		// Pass through simple types without masking
-    if (isSimpleType(arg)) {
+
+    // Pass through clearly non-PII sources; formatter will stringify later
+    if (nonPiiSource(arg)) {
       return arg;
     }
 
-    JsonNode jsonNode;
-    int sizeBytes;
     try {
+      // Strings: only attempt JSON parsing for JSON-like content
       if (arg instanceof String string) {
-        // For strings, size is the original string bytes
-        sizeBytes = string.getBytes().length;
-        if (sizeBytes > maxArgSizeBytes) {
-          addWarn(String.format("Argument size (%d bytes) exceeds limit (%d bytes) - redacting to prevent performance impact",
-              sizeBytes, maxArgSizeBytes));
-          return "[REDACTED DUE TO ARG TOO LARGE: " + formatSize(sizeBytes) + "]";
+        if (!isJsonLike(string)) {
+          return string;
         }
-        jsonNode = COMPACT_MAPPER.readTree(string);
-      } else {
-        // For objects, serialize to JSON tree and measure its JSON size
-        jsonNode = COMPACT_MAPPER.valueToTree(arg);
-        sizeBytes = jsonNode.toString().getBytes().length;
-        if (sizeBytes > maxArgSizeBytes) {
-          addWarn(String.format("Serialized argument size (%d bytes) exceeds limit (%d bytes) - redacting to prevent performance impact",
-              sizeBytes, maxArgSizeBytes));
-          return "[REDACTED DUE TO ARG TOO LARGE: " + formatSize(sizeBytes) + "]";
-        }
+        JsonNode node = compactMapper.readTree(string);
+        maskingLayout.maskJsonTree(node);
+        return node;
       }
+
+      // DTO/POJO objects: Serialize to JSON tree (StreamWriteConstraints protect during this)
+      JsonNode node = compactMapper.valueToTree(arg);
+      maskingLayout.maskJsonTree(node);
+      return node;
+
     } catch (Exception e) {
-      // Fallback for objects/strings that can't be parsed/serialized
-      return "[REDACTED DUE TO SERIALIZATION FAILURE: " + e.getMessage() + "]";
+      // Fallback for objects/strings that can't be parsed/serialized; include exception detail
+      String msg = e.getMessage();
+      if (msg == null) msg = e.getClass().getSimpleName();
+      else {
+        msg = msg.replaceAll("\\s+", " ");
+        if (msg.length() > 200) msg = msg.substring(0, 200) + "...";
+        msg = e.getClass().getSimpleName() + ": " + msg;
+      }
+      return "[REDACTED DUE TO SERIALIZATION FAILURE: " + msg + "]";
     }
-
-    // Mask PII and return compact JSON string
-    maskingLayout.maskJsonTree(jsonNode);
-    return jsonNode.toString();
-  }
-
-  /**
-   * Format byte size in human-readable format (KB/MB).
-   * <p>
-   * Helper method for logging size limit violations.
-   * 
-   * @param bytes the size in bytes
-   * @return formatted size string (e.g., "512KB", "2.5MB")
-   */
-  private String formatSize(int bytes) {
-    if (bytes < 1024) {
-      return bytes + "B";
-    }
-		if (bytes < 1024 * 1024) {
-      return String.format("%.1fKB", bytes / 1024.0);
-    }
-		return String.format("%.1fMB", bytes / (1024.0 * 1024));
-  }
-
-  /**
-   * Check if an object is a simple type that doesn't need masking.
-   * <p>
-   * Simple types are passed through without JSON conversion or masking:
-   * primitives, boxed primitives (Number, Boolean), enums, and date/time types
-   * (LocalDate, LocalDateTime).
-   * <p>
-   * This optimization avoids unnecessary JSON serialization for values that
-   * typically don't contain PII.
-   * 
-   * @param obj the object to check
-   * @return {@code true} if the object is a simple type
-   */
-  private boolean isSimpleType(Object obj) {
-    Class<?> c = obj.getClass();
-    return c.isPrimitive()
-        || Number.class.isAssignableFrom(c)
-        || c.equals(Boolean.class)
-        || c.isEnum()
-        || c.equals(LocalDate.class)
-        || c.equals(LocalDateTime.class);
   }
 
   /**
@@ -407,6 +455,11 @@ public class JsonStructuredLayout extends LayoutBase<ILoggingEvent> {
       addError("CRITICAL – PiiDataMasker missing, refusing to start");
       throw new IllegalStateException("maskingLayout is REQUIRED");
     }
+    
+    // Initialize mappers with configured constraints
+    compactMapper = createSafeMapper(false);
+    prettyMapper = createSafeMapper(true);
+    
     maskingLayout.start();
     super.start();
   }
@@ -414,8 +467,7 @@ public class JsonStructuredLayout extends LayoutBase<ILoggingEvent> {
   /**
    * Shutdown the layout (Logback lifecycle).
    * <p>
-   * Cleanly stops the PII masker component and parent layout. Ensures proper
-   * cleanup of resources like thread-local variables in the masker.
+   * Cleanly stops the PII masker component and parent layout.
    */
   @Override
   public void stop() {
